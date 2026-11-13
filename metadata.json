@@ -1,0 +1,6 @@
+{
+  "name": "StayFlow PMS",
+  "description": "Otel Ön Büro, Rezervasyon, Oda Rack ve Check-In/Check-Out Yönetim Sistemi",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

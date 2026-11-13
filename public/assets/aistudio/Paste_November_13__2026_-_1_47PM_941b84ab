@@ -1,0 +1,2150 @@
+"use client";
+
+import React, { useState, useMemo } from "react";
+import {
+  Search,
+  ArrowUpDown,
+  ArrowUp,
+  ArrowDown,
+  Eye,
+  Pencil,
+  Printer,
+  Plus,
+  Layers,
+  X,
+  CalendarPlus,
+  Check,
+  LogIn,
+  LogOut,
+  Calendar,
+  BedDouble,
+  Grid,
+  StickyNote,
+  CheckCircle2,
+  Clock,
+  Undo2,
+  AlertCircle,
+  AlertTriangle,
+  Sparkles,
+  FileText,
+  Wrench,
+  MessageSquare,
+  Trash2,
+  Save,
+  Filter,
+  Ban,
+  ShieldCheck,
+} from "lucide-react";
+
+// ============================================================================
+// 1. VERİ MODELLERİ VE TİPLER
+// ============================================================================
+type MainModule = "RESERVATION" | "ARRIVALS" | "INHOUSE_RACK" | "DUE_OUTS";
+type SortField = "resCode" | "roomNumber" | "guestName" | "checkIn" | "category" | "paidAmount";
+type SortDirection = "asc" | "desc";
+type PaymentStatus = "ODENDI" | "KISMI_ODENDI" | "ODENMEDI";
+type ResLifecycle = "CONFIRMED" | "INHOUSE" | "CHECKED_OUT";
+type RoomPhysicalStatus = "AVAILABLE" | "OUT_OF_ORDER" | "CLOSED_TO_SALES";
+type RackDisplayStatus = "INHOUSE" | "BOS" | "DUE_OUT" | "OUT_OF_ORDER" | "CLOSED_TO_SALES";
+
+export interface RoomCategory {
+  id: string;
+  name: string;
+  defaultRate: number;
+}
+
+export interface RoomRequests {
+  teknik: string;
+  hk: string;
+  resepsiyon: string;
+}
+
+export interface HotelRoom {
+  roomNumber: string;
+  floor: number;
+  categoryId: string;
+  physicalStatus: RoomPhysicalStatus;
+  isDirty?: boolean;
+}
+
+export interface Reservation {
+  id: string;
+  groupId?: string;
+  resCode: string;
+  roomNumber: string | null;
+  firstName: string;
+  lastName: string;
+  checkIn: string; // YYYY-MM-DD
+  checkOut: string; // YYYY-MM-DD
+  nights: number;
+  categoryId: string;
+  paymentStatus: PaymentStatus;
+  paidAmount: number;
+  totalAmount: number;
+  notes: string;
+  lifecycle: ResLifecycle;
+  checkedInAt?: string;
+  checkedOutAt?: string;
+}
+
+export interface ConflictPopupData {
+  title: string;
+  message: string;
+  detailLine?: string;
+}
+
+// ============================================================================
+// 2. SABİT TANIMLAR: 8 ODA KATEGORİSİ VE 4 KAT x 5 ODA (20 ODA)
+// ============================================================================
+const INITIAL_CATEGORIES: RoomCategory[] = [
+  { id: "CAT-1", name: "Sea View Deluxe King", defaultRate: 4500 },
+  { id: "CAT-2", name: "City View Deluxe King", defaultRate: 4000 },
+  { id: "CAT-3", name: "Sea View King", defaultRate: 3800 },
+  { id: "CAT-4", name: "City View King", defaultRate: 3400 },
+  { id: "CAT-5", name: "Sea View Deluxe Twin", defaultRate: 4300 },
+  { id: "CAT-6", name: "City View Deluxe Twin", defaultRate: 3800 },
+  { id: "CAT-7", name: "Sea View Twin", defaultRate: 3600 },
+  { id: "CAT-8", name: "City View Twin", defaultRate: 3200 },
+];
+
+const INITIAL_ROOMS: HotelRoom[] = [
+  // 1. Kat
+  { roomNumber: "4101", floor: 1, categoryId: "CAT-1", physicalStatus: "AVAILABLE" },
+  { roomNumber: "4102", floor: 1, categoryId: "CAT-4", physicalStatus: "AVAILABLE", isDirty: true },
+  { roomNumber: "4103", floor: 1, categoryId: "CAT-8", physicalStatus: "AVAILABLE" },
+  { roomNumber: "4104", floor: 1, categoryId: "CAT-2", physicalStatus: "AVAILABLE" },
+  { roomNumber: "4105", floor: 1, categoryId: "CAT-8", physicalStatus: "OUT_OF_ORDER" },
+  // 2. Kat
+  { roomNumber: "4201", floor: 2, categoryId: "CAT-2", physicalStatus: "AVAILABLE" },
+  { roomNumber: "4202", floor: 2, categoryId: "CAT-4", physicalStatus: "AVAILABLE" },
+  { roomNumber: "4203", floor: 2, categoryId: "CAT-6", physicalStatus: "AVAILABLE" },
+  { roomNumber: "4204", floor: 2, categoryId: "CAT-6", physicalStatus: "CLOSED_TO_SALES" },
+  { roomNumber: "4205", floor: 2, categoryId: "CAT-7", physicalStatus: "AVAILABLE" },
+  // 3. Kat
+  { roomNumber: "4301", floor: 3, categoryId: "CAT-3", physicalStatus: "AVAILABLE" },
+  { roomNumber: "4302", floor: 3, categoryId: "CAT-3", physicalStatus: "AVAILABLE" },
+  { roomNumber: "4303", floor: 3, categoryId: "CAT-5", physicalStatus: "AVAILABLE" },
+  { roomNumber: "4304", floor: 3, categoryId: "CAT-4", physicalStatus: "AVAILABLE" },
+  { roomNumber: "4305", floor: 3, categoryId: "CAT-7", physicalStatus: "AVAILABLE" },
+  // 4. Kat
+  { roomNumber: "4401", floor: 4, categoryId: "CAT-1", physicalStatus: "OUT_OF_ORDER" },
+  { roomNumber: "4402", floor: 4, categoryId: "CAT-1", physicalStatus: "AVAILABLE" },
+  { roomNumber: "4403", floor: 4, categoryId: "CAT-1", physicalStatus: "AVAILABLE" },
+  { roomNumber: "4404", floor: 4, categoryId: "CAT-5", physicalStatus: "AVAILABLE" },
+  { roomNumber: "4405", floor: 4, categoryId: "CAT-1", physicalStatus: "AVAILABLE" },
+];
+
+const RACK_STATUS_STYLES: Record<
+  RackDisplayStatus,
+  { label: string; cardBg: string; cardBorder: string; badgeBg: string; badgeText: string }
+> = {
+  INHOUSE: { label: "INHOUSE", cardBg: "bg-sky-100/95", cardBorder: "border-sky-300", badgeBg: "bg-sky-200", badgeText: "text-sky-900" },
+  BOS: { label: "BOŞ", cardBg: "bg-emerald-100/95", cardBorder: "border-emerald-300", badgeBg: "bg-emerald-600", badgeText: "text-white" },
+  DUE_OUT: { label: "DUE OUT", cardBg: "bg-amber-100/95", cardBorder: "border-amber-300", badgeBg: "bg-amber-400", badgeText: "text-amber-950" },
+  OUT_OF_ORDER: { label: "OUT OF ORDER", cardBg: "bg-slate-200/95", cardBorder: "border-slate-400", badgeBg: "bg-slate-600", badgeText: "text-white" },
+  CLOSED_TO_SALES: { label: "CLOSED TO SALES", cardBg: "bg-rose-100/95", cardBorder: "border-rose-300", badgeBg: "bg-rose-400", badgeText: "text-rose-950" },
+};
+
+// ============================================================================
+// 3. YARDIMCI FONKSİYONLAR VE TARİH ÇAKIŞMA MOTORU
+// ============================================================================
+function getSystemTodayISO(): string {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, "0");
+  const d = String(now.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+function addDaysISO(isoDate: string, days: number): string {
+  const dt = new Date(isoDate);
+  dt.setDate(dt.getDate() + days);
+  const y = dt.getFullYear();
+  const m = String(dt.getMonth() + 1).padStart(2, "0");
+  const d = String(dt.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+function formatTrDate(isoDate: string): string {
+  if (!isoDate) return "";
+  const months = ["Oca", "Şub", "Mar", "Nis", "May", "Haz", "Tem", "Ağu", "Eyl", "Eki", "Kas", "Ara"];
+  const [y, m, d] = isoDate.split("-");
+  return `${Number(d)} ${months[Number(m) - 1]} ${y}`;
+}
+
+function calculateNights(checkIn: string, checkOut: string): number {
+  if (!checkIn || !checkOut) return 1;
+  const start = new Date(checkIn).getTime();
+  const end = new Date(checkOut).getTime();
+  const diff = Math.round((end - start) / (1000 * 60 * 60 * 24));
+  return diff > 0 ? diff : 1;
+}
+
+// İki konaklama aralığının tarih çakışması kontrolü (Aynı gün çıkış-giriş devrine izin verir)
+function isDateRangeOverlapping(
+  startA: string,
+  endA: string,
+  startB: string,
+  endB: string
+): boolean {
+  return startA < endB && endA > startB;
+}
+
+// ============================================================================
+// 4. ORTAK REZERVASYON KARTI (RESERVATION & ARRIVALS İÇİN BİREBİR AYNI)
+// ============================================================================
+interface ReservationCardModalProps {
+  isOpen: boolean;
+  mode: "CREATE" | "EDIT";
+  initialData?: Reservation | null;
+  categories: RoomCategory[];
+  onUpdateCategories: (updated: RoomCategory[]) => void;
+  defaultCheckInDate: string;
+  onClose: () => void;
+  onSave: (savedRow: Reservation, isNew: boolean) => boolean; // Çakışma varsa false döner ve kart açık kalır
+}
+
+function ReservationCardModal({
+  isOpen,
+  mode,
+  initialData,
+  categories,
+  onUpdateCategories,
+  defaultCheckInDate,
+  onClose,
+  onSave,
+}: ReservationCardModalProps) {
+  const [firstName, setFirstName] = useState(initialData?.firstName || "");
+  const [lastName, setLastName] = useState(initialData?.lastName || "");
+  const [roomNumber, setRoomNumber] = useState(initialData?.roomNumber || "");
+  const [checkInDate, setCheckInDate] = useState(initialData?.checkIn || defaultCheckInDate);
+  const [checkOutDate, setCheckOutDate] = useState(
+    initialData?.checkOut || addDaysISO(defaultCheckInDate, 2)
+  );
+  const [selectedCategoryId, setSelectedCategoryId] = useState(
+    initialData?.categoryId || categories[0].id
+  );
+  const [totalPrice, setTotalPrice] = useState<number>(
+    initialData?.totalAmount ?? categories[0].defaultRate * 2
+  );
+  const [paidAmount, setPaidAmount] = useState<number>(initialData?.paidAmount ?? 0);
+  const [notes, setNotes] = useState<string>(initialData?.notes || "");
+
+  const [isEditingCats, setIsEditingCats] = useState(false);
+  const [draftCats, setDraftCats] = useState<RoomCategory[]>(categories);
+
+  if (!isOpen) return null;
+
+  const nights = calculateNights(checkInDate, checkOutDate);
+  const remainingPayment = Math.max(0, totalPrice - paidAmount);
+
+  const handleDateOrCatChange = (newIn: string, newOut: string, newCatId: string) => {
+    setCheckInDate(newIn);
+    setCheckOutDate(newOut);
+    setSelectedCategoryId(newCatId);
+
+    const n = calculateNights(newIn, newOut);
+    const cat = categories.find((c) => c.id === newCatId) || categories[0];
+    setTotalPrice(cat.defaultRate * n);
+  };
+
+  const handleSaveCats = () => {
+    const cleaned = draftCats.map((d, idx) => ({
+      ...d,
+      name: d.name.trim() || categories[idx].name,
+    }));
+    onUpdateCategories(cleaned);
+    setIsEditingCats(false);
+  };
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!firstName.trim() || !lastName.trim()) return;
+
+    let status: PaymentStatus = "ODENMEDI";
+    if (paidAmount >= totalPrice && totalPrice > 0) status = "ODENDI";
+    else if (paidAmount > 0 && paidAmount < totalPrice) status = "KISMI_ODENDI";
+
+    const rowPayload: Reservation = {
+      id: initialData?.id || `RES-${Date.now()}`,
+      groupId: initialData?.groupId,
+      resCode: initialData?.resCode || `SF-${Math.floor(1000 + Math.random() * 9000)}`,
+      roomNumber: roomNumber.trim() ? roomNumber.trim() : null,
+      firstName: firstName.trim().toLocaleUpperCase("tr-TR"),
+      lastName: lastName.trim().toLocaleUpperCase("tr-TR"),
+      checkIn: checkInDate,
+      checkOut: checkOutDate,
+      nights,
+      categoryId: selectedCategoryId,
+      paymentStatus: status,
+      paidAmount,
+      totalAmount: totalPrice,
+      notes,
+      lifecycle: initialData?.lifecycle || "CONFIRMED",
+      checkedInAt: initialData?.checkedInAt,
+      checkedOutAt: initialData?.checkedOutAt,
+    };
+
+    onSave(rowPayload, mode === "CREATE");
+  };
+
+  return (
+    <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center z-40 p-4">
+      <div className="bg-white rounded-lg shadow-2xl border border-slate-300 w-full max-w-lg overflow-hidden">
+        <div className="flex items-center justify-between px-4 py-3 bg-slate-900 text-white">
+          <div className="flex items-center gap-2">
+            <CalendarPlus className="w-4 h-4 text-sky-400" />
+            <h2 className="font-bold text-sm tracking-wide">
+              {mode === "CREATE"
+                ? "YENİ REZERVASYON KARTI"
+                : `REZERVASYON KARTI — ${initialData?.resCode}`}
+            </h2>
+          </div>
+          <button type="button" onClick={onClose} className="text-slate-400 hover:text-white cursor-pointer">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="p-4 flex flex-col gap-3 text-xs">
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="font-bold text-slate-700 block mb-1">Ad *</label>
+              <input
+                type="text"
+                required
+                autoFocus
+                value={firstName}
+                onChange={(e) => setFirstName(e.target.value)}
+                placeholder="Örn: Ahmet"
+                className="w-full border border-slate-300 rounded px-2.5 py-1.5 text-sm font-medium focus:outline-none focus:border-sky-600"
+              />
+            </div>
+            <div>
+              <label className="font-bold text-slate-700 block mb-1">Soyad *</label>
+              <input
+                type="text"
+                required
+                value={lastName}
+                onChange={(e) => setLastName(e.target.value)}
+                placeholder="Örn: Yılmaz"
+                className="w-full border border-slate-300 rounded px-2.5 py-1.5 text-sm font-medium focus:outline-none focus:border-sky-600"
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-3 gap-3">
+            <div>
+              <label className="font-bold text-slate-700 block mb-1">Oda No</label>
+              <input
+                type="text"
+                value={roomNumber}
+                onChange={(e) => setRoomNumber(e.target.value)}
+                placeholder="Boş / 4101"
+                className="w-full border border-slate-300 rounded px-2.5 py-1.5 text-xs font-bold bg-white focus:outline-none focus:border-sky-600"
+              />
+            </div>
+
+            <div className="col-span-2">
+              <div className="flex items-center justify-between mb-1">
+                <label className="font-bold text-slate-700">Oda Tipi *</label>
+                {!isEditingCats ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDraftCats(categories.map((c) => ({ ...c })));
+                      setIsEditingCats(true);
+                    }}
+                    className="flex items-center gap-1 px-1.5 py-0.2 rounded bg-slate-100 hover:bg-slate-200 border border-slate-300 text-[10px] font-bold text-slate-700 cursor-pointer"
+                  >
+                    <Pencil className="w-2.5 h-2.5" />
+                    EDIT
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={handleSaveCats}
+                    className="flex items-center gap-1 px-2 py-0.2 rounded bg-emerald-600 hover:bg-emerald-700 text-[10px] font-extrabold text-white cursor-pointer"
+                  >
+                    <Check className="w-2.5 h-2.5" />
+                    SAVE
+                  </button>
+                )}
+              </div>
+
+              {!isEditingCats ? (
+                <select
+                  value={selectedCategoryId}
+                  onChange={(e) => handleDateOrCatChange(checkInDate, checkOutDate, e.target.value)}
+                  className="w-full border border-slate-300 rounded px-2.5 py-1.5 text-xs font-semibold bg-white focus:outline-none focus:border-sky-600"
+                >
+                  {categories.map((cat) => (
+                    <option key={cat.id} value={cat.id}>
+                      {cat.name}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <div className="p-2 bg-amber-50 border border-amber-300 rounded flex flex-col gap-1 max-h-36 overflow-y-auto">
+                  {draftCats.map((cat, idx) => (
+                    <div key={cat.id} className="flex items-center gap-1">
+                      <span className="text-[10px] font-bold text-slate-500 w-3">{idx + 1}.</span>
+                      <input
+                        type="text"
+                        value={cat.name}
+                        onChange={(e) =>
+                          setDraftCats((prev) =>
+                            prev.map((c) => (c.id === cat.id ? { ...c, name: e.target.value } : c))
+                          )
+                        }
+                        className="w-full px-1.5 py-0.5 text-xs font-semibold bg-white border border-slate-300 rounded"
+                      />
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="font-bold text-slate-700 block mb-1">Giriş Tarihi *</label>
+              <input
+                type="date"
+                required
+                value={checkInDate}
+                onChange={(e) =>
+                  handleDateOrCatChange(e.target.value, checkOutDate, selectedCategoryId)
+                }
+                className="w-full border border-slate-300 rounded px-2.5 py-1.5 text-xs font-medium bg-white"
+              />
+            </div>
+            <div>
+              <label className="font-bold text-slate-700 block mb-1">
+                Çıkış Tarihi * <span className="text-sky-700">({nights} Gece)</span>
+              </label>
+              <input
+                type="date"
+                required
+                min={checkInDate}
+                value={checkOutDate}
+                onChange={(e) =>
+                  handleDateOrCatChange(checkInDate, e.target.value, selectedCategoryId)
+                }
+                className="w-full border border-slate-300 rounded px-2.5 py-1.5 text-xs font-medium bg-white"
+              />
+            </div>
+          </div>
+
+          <div className="p-2.5 rounded-md bg-slate-50 border border-slate-200 flex flex-col gap-2">
+            <div className="grid grid-cols-3 gap-2">
+              <div>
+                <label className="font-bold text-slate-600 block mb-1">Total Ödeme (TL)</label>
+                <input
+                  type="number"
+                  min={0}
+                  value={totalPrice}
+                  onChange={(e) => setTotalPrice(Math.max(0, Number(e.target.value)))}
+                  className="w-full border border-slate-300 rounded px-2 py-1 font-bold text-xs bg-white"
+                />
+              </div>
+
+              <div>
+                <label className="font-bold text-slate-700 block mb-1">Yapılan Ödeme</label>
+                <input
+                  type="number"
+                  min={0}
+                  max={totalPrice}
+                  value={paidAmount}
+                  onChange={(e) => setPaidAmount(Math.max(0, Number(e.target.value)))}
+                  className="w-full border border-emerald-400 rounded px-2 py-1 font-bold text-xs bg-white text-emerald-900"
+                />
+              </div>
+
+              <div>
+                <label className="font-bold text-slate-600 block mb-1">Kalan Ödeme</label>
+                <div
+                  className={`w-full px-2 py-1 rounded border font-extrabold text-xs ${
+                    remainingPayment > 0
+                      ? "bg-amber-50 border-amber-300 text-amber-800"
+                      : "bg-emerald-50 border-emerald-300 text-emerald-800"
+                  }`}
+                >
+                  {remainingPayment.toLocaleString("tr-TR")} TL
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <label className="font-bold text-slate-700 flex items-center gap-1 mb-1">
+              <StickyNote className="w-3.5 h-3.5 text-slate-500" />
+              Notlar / Serbest Not
+            </label>
+            <textarea
+              rows={3}
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              placeholder="Misafir notları, özel istekler, geliş saati..."
+              className="w-full border border-slate-300 rounded px-2.5 py-1.5 text-xs bg-slate-50/60 focus:bg-white focus:outline-none focus:border-sky-600 resize-y"
+            />
+          </div>
+
+          <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-200">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-4 py-2 rounded border border-slate-300 bg-white hover:bg-slate-100 text-slate-700 font-bold tracking-wide cursor-pointer"
+            >
+              KAPAT
+            </button>
+            <button
+              type="submit"
+              className="px-5 py-2 rounded bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold tracking-wide shadow-xs cursor-pointer"
+            >
+              SAVE
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// 5. ANA UYGULAMA: STAYFLOW PMS (ÇAKIŞMA KORUMASI + POP-UP HATA PENCERESİ)
+// ============================================================================
+export default function StayFlowPmsApp() {
+  const systemToday = useMemo(() => getSystemTodayISO(), []);
+  const yesterday = useMemo(() => addDaysISO(systemToday, -2), [systemToday]);
+  const tomorrow = useMemo(() => addDaysISO(systemToday, 1), [systemToday]);
+  const next3Days = useMemo(() => addDaysISO(systemToday, 3), [systemToday]);
+
+  const [activeModule, setActiveModule] = useState<MainModule>("ARRIVALS");
+  const [categories, setCategories] = useState<RoomCategory[]>(INITIAL_CATEGORIES);
+  const [rooms, setRooms] = useState<HotelRoom[]>(INITIAL_ROOMS);
+  const [showExtraModules, setShowExtraModules] = useState(false);
+
+  // MERKEZİ POP-UP HATA PENCERESİ STATE'İ (ÇAKIŞMA VE CHECK-IN ENGELLERİ İÇİN)
+  const [conflictPopup, setConflictPopup] = useState<ConflictPopupData | null>(null);
+
+  // MERKEZİ REZERVASYON VERİTABANI
+  const [reservations, setReservations] = useState<Reservation[]>([
+    // --- BUGÜN GİRİŞ YAPACAKLAR (ARRIVALS) ---
+    {
+      id: "R-101",
+      resCode: "SF-8192",
+      roomNumber: "4101",
+      firstName: "AHMET",
+      lastName: "YILMAZ",
+      checkIn: systemToday,
+      checkOut: next3Days,
+      nights: 3,
+      categoryId: "CAT-1",
+      paymentStatus: "ODENDI",
+      paidAmount: 13500,
+      totalAmount: 13500,
+      notes: "Yüksek kat ve sessiz oda talep edildi.",
+      lifecycle: "CONFIRMED",
+    },
+    {
+      id: "R-102",
+      resCode: "SF-8193",
+      roomNumber: null,
+      firstName: "MELİS",
+      lastName: "ŞEN",
+      checkIn: systemToday,
+      checkOut: addDaysISO(systemToday, 2),
+      nights: 2,
+      categoryId: "CAT-4",
+      paymentStatus: "KISMI_ODENDI",
+      paidAmount: 3400,
+      totalAmount: 6800,
+      notes: "14:30 gibi giriş yapacak.",
+      lifecycle: "CONFIRMED",
+    },
+    {
+      id: "R-103",
+      groupId: "GRP-KAYA",
+      resCode: "SF-3104",
+      roomNumber: "4201",
+      firstName: "SELİN",
+      lastName: "KAYA",
+      checkIn: systemToday,
+      checkOut: next3Days,
+      nights: 3,
+      categoryId: "CAT-2",
+      paymentStatus: "ODENDI",
+      paidAmount: 12000,
+      totalAmount: 12000,
+      notes: "Çoklu oda rezervasyonu (1/2)",
+      lifecycle: "CONFIRMED",
+    },
+    {
+      id: "R-104",
+      groupId: "GRP-KAYA",
+      resCode: "SF-3105",
+      roomNumber: "4203",
+      firstName: "SELİN",
+      lastName: "KAYA",
+      checkIn: systemToday,
+      checkOut: next3Days,
+      nights: 3,
+      categoryId: "CAT-6",
+      paymentStatus: "ODENMEDI",
+      paidAmount: 0,
+      totalAmount: 11400,
+      notes: "Çoklu oda rezervasyonu (2/2)",
+      lifecycle: "CONFIRMED",
+    },
+    // Çakışma testi için: Oda 4104'te CAN DEMİR aktif INHOUSE iken aynı odaya atanmış örnek ARRIVAL
+    {
+      id: "R-105",
+      resCode: "SF-8199",
+      roomNumber: "4104",
+      firstName: "BARIŞ",
+      lastName: "ARSLAN",
+      checkIn: systemToday,
+      checkOut: addDaysISO(systemToday, 2),
+      nights: 2,
+      categoryId: "CAT-2",
+      paymentStatus: "ODENDI",
+      paidAmount: 8000,
+      totalAmount: 8000,
+      notes: "Çakışma testi kaydı",
+      lifecycle: "CONFIRMED",
+    },
+
+    // --- HALİHAZIRDA KONAKLAYANLAR (INHOUSE) ---
+    {
+      id: "R-201",
+      resCode: "SF-7710",
+      roomNumber: "4104",
+      firstName: "CAN",
+      lastName: "DEMİR",
+      checkIn: yesterday,
+      checkOut: tomorrow,
+      nights: 3,
+      categoryId: "CAT-2",
+      paymentStatus: "ODENDI",
+      paidAmount: 12000,
+      totalAmount: 12000,
+      notes: "",
+      lifecycle: "INHOUSE",
+      checkedInAt: "14:10",
+    },
+    {
+      id: "R-202",
+      resCode: "SF-7712",
+      roomNumber: "4301",
+      firstName: "ELİF",
+      lastName: "ŞEN",
+      checkIn: systemToday,
+      checkOut: next3Days,
+      nights: 3,
+      categoryId: "CAT-3",
+      paymentStatus: "ODENDI",
+      paidAmount: 11400,
+      totalAmount: 11400,
+      notes: "Erken giriş yapıldı.",
+      lifecycle: "INHOUSE",
+      checkedInAt: "10:15",
+    },
+    {
+      id: "R-203",
+      resCode: "SF-7715",
+      roomNumber: "4402",
+      firstName: "HAKAN",
+      lastName: "ACAR",
+      checkIn: yesterday,
+      checkOut: tomorrow,
+      nights: 3,
+      categoryId: "CAT-1",
+      paymentStatus: "ODENDI",
+      paidAmount: 13500,
+      totalAmount: 13500,
+      notes: "",
+      lifecycle: "INHOUSE",
+      checkedInAt: "15:20",
+    },
+
+    // --- BUGÜN ÇIKIŞ YAPACAKLAR (DUE OUTS) ---
+    {
+      id: "R-301",
+      resCode: "SF-6501",
+      roomNumber: "4103",
+      firstName: "MELİSA",
+      lastName: "KAYA",
+      checkIn: yesterday,
+      checkOut: systemToday,
+      nights: 2,
+      categoryId: "CAT-8",
+      paymentStatus: "ODENDI",
+      paidAmount: 6400,
+      totalAmount: 6400,
+      notes: "",
+      lifecycle: "INHOUSE",
+      checkedInAt: "13:00",
+    },
+    {
+      id: "R-302",
+      resCode: "SF-6502",
+      roomNumber: "4205",
+      firstName: "ÖMER",
+      lastName: "AVCI",
+      checkIn: yesterday,
+      checkOut: systemToday,
+      nights: 2,
+      categoryId: "CAT-7",
+      paymentStatus: "KISMI_ODENDI",
+      paidAmount: 6000,
+      totalAmount: 7200,
+      notes: "Kalan 1.200 TL çıkışta tahsil edilecek.",
+      lifecycle: "INHOUSE",
+      checkedInAt: "14:40",
+    },
+    {
+      id: "R-303",
+      resCode: "SF-6503",
+      roomNumber: "4304",
+      firstName: "DERYA",
+      lastName: "KARA",
+      checkIn: yesterday,
+      checkOut: systemToday,
+      nights: 2,
+      categoryId: "CAT-4",
+      paymentStatus: "ODENDI",
+      paidAmount: 6800,
+      totalAmount: 6800,
+      notes: "",
+      lifecycle: "INHOUSE",
+      checkedInAt: "12:15",
+    },
+    {
+      id: "R-304",
+      resCode: "SF-6504",
+      roomNumber: "4405",
+      firstName: "UFUK",
+      lastName: "ÖZKAN",
+      checkIn: yesterday,
+      checkOut: systemToday,
+      nights: 2,
+      categoryId: "CAT-1",
+      paymentStatus: "KISMI_ODENDI",
+      paidAmount: 8550,
+      totalAmount: 9000,
+      notes: "Kalan 450 TL tahsil edilecek.",
+      lifecycle: "INHOUSE",
+      checkedInAt: "16:05",
+    },
+
+    // --- BUGÜN ÇIKIŞI TAMAMLANANLAR (CHECKED OUT) ---
+    {
+      id: "R-401",
+      resCode: "SF-6490",
+      roomNumber: "4102",
+      firstName: "BURAK",
+      lastName: "ÖZKAN",
+      checkIn: yesterday,
+      checkOut: systemToday,
+      nights: 2,
+      categoryId: "CAT-4",
+      paymentStatus: "ODENDI",
+      paidAmount: 6800,
+      totalAmount: 6800,
+      notes: "",
+      lifecycle: "CHECKED_OUT",
+      checkedOutAt: "09:45",
+    },
+  ]);
+
+  const [dueOutPaymentInputs, setDueOutPaymentInputs] = useState<Record<string, string>>({});
+  const [roomRequests, setRoomRequests] = useState<Record<string, RoomRequests>>({
+    "4104": {
+      teknik: "Banyo bataryası sızdırıyor, kontrol edilmeli.",
+      hk: "Odaya ekstra yastık bırakılacak.",
+      resepsiyon: "",
+    },
+    "4301": {
+      teknik: "",
+      hk: "",
+      resepsiyon: "Sabah 07:30 uyandırma servisi istedi.",
+    },
+  });
+
+  const [resModal, setResModal] = useState<{
+    isOpen: boolean;
+    mode: "CREATE" | "EDIT";
+    target: Reservation | null;
+  }>({ isOpen: false, mode: "CREATE", target: null });
+
+  const [rackModalRoomNumber, setRackModalRoomNumber] = useState<string | null>(null);
+  const [draftTeknik, setDraftTeknik] = useState("");
+  const [draftHk, setDraftHk] = useState("");
+  const [draftResepsiyon, setDraftResepsiyon] = useState("");
+
+  const [searchQuery, setSearchQuery] = useState("");
+  const [dateFilter, setDateFilter] = useState("ALL");
+  const [paymentFilter, setPaymentFilter] = useState<"ALL" | PaymentStatus>("ALL");
+  const [onlyMultiRoom, setOnlyMultiRoom] = useState(false);
+  const [sortField, setSortField] = useState<SortField>("checkIn");
+  const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
+  const [rackFilter, setRackFilter] = useState<RackDisplayStatus | "ALL">("ALL");
+
+  const getCategoryName = (catId: string) =>
+    categories.find((c) => c.id === catId)?.name || "Tanımsız";
+
+  // ==========================================================================
+  // ÇAKIŞMA KORUMASI VE İŞ KURALLARI (BUSINESS LOGIC)
+  // ==========================================================================
+
+  // KURAL 1: RESERVATION / ARRIVALS KAYIT & DÜZENLEME TARİH ÇAKIŞMASI KONTROLÜ
+  const handleSaveReservation = (saved: Reservation, isNew: boolean): boolean => {
+    if (saved.roomNumber) {
+      // 1A. Tanımlı bir oda numarası mı?
+      const roomObj = rooms.find((rm) => rm.roomNumber === saved.roomNumber);
+      if (!roomObj) {
+        setConflictPopup({
+          title: "GEÇERSİZ ODA NUMARASI",
+          message: `"${saved.roomNumber}" numaralı oda otel envanterinde (4101–4405) bulunamadı.`,
+          detailLine: "Lütfen geçerli bir oda numarası girin veya oda atamasını boş bırakın.",
+        });
+        return false;
+      }
+
+      // 1B. Aynı odada aktif INHOUSE konaklama veya başka bir CONFIRMED rezervasyon ile tarih çakışması var mı?
+      const conflictingRes = reservations.find(
+        (existing) =>
+          existing.id !== saved.id &&
+          existing.roomNumber === saved.roomNumber &&
+          existing.lifecycle !== "CHECKED_OUT" &&
+          isDateRangeOverlapping(
+            saved.checkIn,
+            saved.checkOut,
+            existing.checkIn,
+            existing.checkOut
+          )
+      );
+
+      if (conflictingRes) {
+        const statusLabel =
+          conflictingRes.lifecycle === "INHOUSE"
+            ? "INHOUSE (Şu An Konaklıyor)"
+            : "CONFIRMED (Onaylı Rezervasyon)";
+
+        setConflictPopup({
+          title: "TARİH VE ODA ÇAKIŞMASI ENGELLENDİ",
+          message: `Oda ${saved.roomNumber} seçilen tarih aralığında (${formatTrDate(saved.checkIn)} → ${formatTrDate(saved.checkOut)}) başka bir kayıtla çakışıyor. Değişiklik kaydedilmedi.`,
+          detailLine: `Çakışan Kayıt: ${conflictingRes.resCode} • ${conflictingRes.firstName} ${conflictingRes.lastName} (${formatTrDate(conflictingRes.checkIn)} → ${formatTrDate(conflictingRes.checkOut)}) [${statusLabel}]`,
+        });
+        return false;
+      }
+    }
+
+    // Çakışma yoksa kaydet ve kartı kapat
+    if (isNew) setReservations((prev) => [saved, ...prev]);
+    else setReservations((prev) => prev.map((r) => (r.id === saved.id ? saved : r)));
+    setResModal({ isOpen: false, mode: "CREATE", target: null });
+    return true;
+  };
+
+  // KURAL 2: ARRIVALS -> INHOUSE MODÜLÜNDE AKTİF OLAN BİR ODAYA CHECK-IN YAPMAYI ENGELLEME
+  const handleCheckIn = (res: Reservation) => {
+    // 2A. Oda atanmamışsa kartı aç
+    if (!res.roomNumber) {
+      setConflictPopup({
+        title: "ODA NUMARASI ATANMAMIŞ",
+        message: `${res.firstName} ${res.lastName} için henüz oda numarası atanmamış. Check-In öncesinde Rezervasyon Kartından oda seçmelisiniz.`,
+      });
+      setResModal({ isOpen: true, mode: "EDIT", target: res });
+      return;
+    }
+
+    const roomObj = rooms.find((rm) => rm.roomNumber === res.roomNumber);
+    if (!roomObj) {
+      setConflictPopup({
+        title: "GEÇERSİZ ODA NUMARASI",
+        message: `${res.roomNumber} numaralı oda otel tanımlı odalar (4101-4405) arasında bulunamadı.`,
+      });
+      return;
+    }
+
+    // 2B. Oda OUT OF ORDER veya CLOSED TO SALES ise engelle
+    if (roomObj.physicalStatus !== "AVAILABLE") {
+      setConflictPopup({
+        title: "ODA GİRİŞE KAPALI",
+        message: `Oda ${res.roomNumber} şu anda "${roomObj.physicalStatus === "OUT_OF_ORDER" ? "OUT OF ORDER (Arızalı)" : "CLOSED TO SALES (Satışa Kapalı)"}" durumunda olduğu için Check-In yapılamaz.`,
+        detailLine: "Önce INHOUSE / RACK ekranından odayı SOLVED durumuna getirin veya başka bir oda atayın.",
+      });
+      return;
+    }
+
+    // 2C. INHOUSE modülünde bu odada halihazırda aktif konaklayan (henüz Check-Out olmamış) bir misafir varsa KESİNLİKLE ENGELLE
+    const activeInhouseGuest = reservations.find(
+      (r) => r.id !== res.id && r.roomNumber === res.roomNumber && r.lifecycle === "INHOUSE"
+    );
+
+    if (activeInhouseGuest) {
+      setConflictPopup({
+        title: "CHECK-IN ENGELLENDİ — ODA HALİHAZIRDA INHOUSE",
+        message: `Oda ${res.roomNumber} şu anda INHOUSE modülünde aktif olarak dolu görünüyor! Mevcut misafirin çıkışı (Check-Out) yapılmadan yeni giriş alınamaz.`,
+        detailLine: `Odadaki Aktif Misafir: ${activeInhouseGuest.firstName} ${activeInhouseGuest.lastName} (${activeInhouseGuest.resCode} • Çıkış: ${formatTrDate(activeInhouseGuest.checkOut)})`,
+      });
+      return;
+    }
+
+    // 2D. Gelecek tarihli rezervasyonlarla tarih çakışması varsa engelle
+    const futureOverlap = reservations.find(
+      (r) =>
+        r.id !== res.id &&
+        r.roomNumber === res.roomNumber &&
+        r.lifecycle === "CONFIRMED" &&
+        isDateRangeOverlapping(res.checkIn, res.checkOut, r.checkIn, r.checkOut)
+    );
+
+    if (futureOverlap) {
+      setConflictPopup({
+        title: "TARİH ÇAKIŞMASI — CHECK-IN ENGELLENDİ",
+        message: `Oda ${res.roomNumber} için aynı tarihlerde çakışan başka bir onaylı rezervasyon mevcut.`,
+        detailLine: `Çakışan Kayıt: ${futureOverlap.resCode} • ${futureOverlap.firstName} ${futureOverlap.lastName} (${formatTrDate(futureOverlap.checkIn)} → ${formatTrDate(futureOverlap.checkOut)})`,
+      });
+      return;
+    }
+
+    // Tüm kontroller temizse CHECK-IN işlemini tamamla
+    const nowTime = new Date().toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" });
+    setReservations((prev) =>
+      prev.map((r) => (r.id === res.id ? { ...r, lifecycle: "INHOUSE", checkedInAt: nowTime } : r))
+    );
+  };
+
+  const handleUndoCheckIn = (res: Reservation) => {
+    setReservations((prev) =>
+      prev.map((r) =>
+        r.id === res.id ? { ...r, lifecycle: "CONFIRMED", checkedInAt: undefined } : r
+      )
+    );
+  };
+
+  // KURAL 3: DUE OUTS -> ÖDEME AL NOTU İLE EŞLEŞEN CHECK OUT AKSİYONU
+  const handleCheckOut = (res: Reservation, collectedNow: number = 0) => {
+    const remainingBalance = Math.max(0, res.totalAmount - res.paidAmount);
+    const updatedPaidAmount = res.paidAmount + collectedNow;
+
+    if (remainingBalance > 0 && updatedPaidAmount !== res.totalAmount) {
+      setConflictPopup({
+        title: "AÇIK BAKİYE — CHECK-OUT ENGELLENDİ",
+        message: `Oda ${res.roomNumber} (${res.firstName} ${res.lastName}) için ${remainingBalance.toLocaleString("tr-TR")} TL kalan ödeme tahsil edilmeden Check-Out yapılamaz.`,
+        detailLine: "ÖDEME AL kutusuna kalan tutarı girerek ödemeyi kapatın.",
+      });
+      return;
+    }
+
+    const nowTime = new Date().toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" });
+    setReservations((prev) =>
+      prev.map((r) =>
+        r.id === res.id
+          ? {
+              ...r,
+              paidAmount: updatedPaidAmount,
+              paymentStatus: "ODENDI",
+              lifecycle: "CHECKED_OUT",
+              checkedOutAt: nowTime,
+            }
+          : r
+      )
+    );
+
+    setDueOutPaymentInputs((prev) => {
+      const copy = { ...prev };
+      delete copy[res.id];
+      return copy;
+    });
+
+    if (res.roomNumber) {
+      setRooms((prev) =>
+        prev.map((rm) => (rm.roomNumber === res.roomNumber ? { ...rm, isDirty: true } : rm))
+      );
+    }
+  };
+
+  const handleUndoCheckOut = (res: Reservation) => {
+    // Geri alırken odaya başka biri girmiş mi kontrol et
+    const occupiedNow = reservations.find(
+      (r) => r.id !== res.id && r.roomNumber === res.roomNumber && r.lifecycle === "INHOUSE"
+    );
+    if (occupiedNow) {
+      setConflictPopup({
+        title: "GERİ ALMA ENGELLENDİ",
+        message: `Oda ${res.roomNumber} şu anda ${occupiedNow.firstName} ${occupiedNow.lastName} tarafından kullanıldığı için eski Check-Out geri alınamaz.`,
+      });
+      return;
+    }
+
+    setReservations((prev) =>
+      prev.map((r) =>
+        r.id === res.id ? { ...r, lifecycle: "INHOUSE", checkedOutAt: undefined } : r
+      )
+    );
+  };
+
+  // INHOUSE / RACK -> ODA FİZİKSEL DURUMU DEĞİŞTİRME
+  const handleSetRoomPhysicalStatus = (roomNumber: string, newStatus: RoomPhysicalStatus) => {
+    setRooms((prev) =>
+      prev.map((rm) =>
+        rm.roomNumber === roomNumber ? { ...rm, physicalStatus: newStatus } : rm
+      )
+    );
+  };
+
+  const handleOpenRackCard = (room: HotelRoom) => {
+    const reqs = roomRequests[room.roomNumber] || { teknik: "", hk: "", resepsiyon: "" };
+    setDraftTeknik(reqs.teknik);
+    setDraftHk(reqs.hk);
+    setDraftResepsiyon(reqs.resepsiyon);
+    setRackModalRoomNumber(room.roomNumber);
+  };
+
+  const handleSaveRoomReq = (type: keyof RoomRequests, val: string) => {
+    if (!rackModalRoomNumber) return;
+    setRoomRequests((prev) => ({
+      ...prev,
+      [rackModalRoomNumber]: {
+        ...(prev[rackModalRoomNumber] || { teknik: "", hk: "", resepsiyon: "" }),
+        [type]: val.trim(),
+      },
+    }));
+  };
+
+  const handleDeleteRoomReq = (type: keyof RoomRequests) => {
+    if (!rackModalRoomNumber) return;
+    if (type === "teknik") setDraftTeknik("");
+    if (type === "hk") setDraftHk("");
+    if (type === "resepsiyon") setDraftResepsiyon("");
+
+    setRoomRequests((prev) => ({
+      ...prev,
+      [rackModalRoomNumber]: {
+        ...(prev[rackModalRoomNumber] || { teknik: "", hk: "", resepsiyon: "" }),
+        [type]: "",
+      },
+    }));
+  };
+
+  // ==========================================================================
+  // TÜRETİLMİŞ LİSTELER
+  // ==========================================================================
+  const handleSort = (field: SortField) => {
+    if (sortField === field) setSortDirection((p) => (p === "asc" ? "desc" : "asc"));
+    else {
+      setSortField(field);
+      setSortDirection("asc");
+    }
+  };
+
+  const multiRoomKeys = useMemo(() => {
+    const counts: Record<string, number> = {};
+    reservations.forEach((r) => {
+      const k = r.groupId || `${r.firstName} ${r.lastName}`;
+      counts[k] = (counts[k] || 0) + 1;
+    });
+    return new Set(Object.keys(counts).filter((k) => counts[k] > 1));
+  }, [reservations]);
+
+  const filterAndSortList = (list: Reservation[], applyDateFilter: boolean) => {
+    const q = searchQuery.toLowerCase().trim();
+    const filtered = list.filter((r) => {
+      const fullName = `${r.firstName} ${r.lastName}`;
+      const isMulti = multiRoomKeys.has(r.groupId || fullName);
+      if (onlyMultiRoom && !isMulti) return false;
+      if (applyDateFilter && dateFilter !== "ALL" && r.checkIn !== dateFilter) return false;
+      if (paymentFilter !== "ALL" && r.paymentStatus !== paymentFilter) return false;
+      if (q) {
+        const roomStr = (r.roomNumber || "boş").toLowerCase();
+        if (
+          !fullName.toLowerCase().includes(q) &&
+          !r.resCode.toLowerCase().includes(q) &&
+          !roomStr.includes(q)
+        ) {
+          return false;
+        }
+      }
+      return true;
+    });
+
+    return [...filtered].sort((a, b) => {
+      let comp = 0;
+      const nameA = `${a.firstName} ${a.lastName}`;
+      const nameB = `${b.firstName} ${b.lastName}`;
+      switch (sortField) {
+        case "resCode":
+          comp = a.resCode.localeCompare(b.resCode, "tr");
+          break;
+        case "roomNumber":
+          comp = (a.roomNumber || "ZZZZ").localeCompare(b.roomNumber || "ZZZZ", "tr");
+          break;
+        case "guestName":
+          comp = nameA.localeCompare(nameB, "tr");
+          break;
+        case "checkIn":
+          comp = a.checkIn.localeCompare(b.checkIn);
+          break;
+        case "category":
+          comp = getCategoryName(a.categoryId).localeCompare(getCategoryName(b.categoryId), "tr");
+          break;
+        case "paidAmount":
+          comp = a.paidAmount - b.paidAmount;
+          break;
+      }
+      if (comp === 0 && nameA === nameB) return a.resCode.localeCompare(b.resCode, "tr");
+      return sortDirection === "asc" ? comp : -comp;
+    });
+  };
+
+  const allReservationsSorted = useMemo(
+    () => filterAndSortList(reservations, true),
+    [reservations, searchQuery, dateFilter, paymentFilter, onlyMultiRoom, sortField, sortDirection, categories]
+  );
+
+  const pendingArrivals = useMemo(
+    () =>
+      filterAndSortList(
+        reservations.filter((r) => r.checkIn === systemToday && r.lifecycle === "CONFIRMED"),
+        false
+      ),
+    [reservations, systemToday, searchQuery, paymentFilter, onlyMultiRoom, sortField, sortDirection, categories]
+  );
+
+  const checkedInToday = useMemo(
+    () =>
+      filterAndSortList(
+        reservations.filter((r) => r.checkIn === systemToday && r.lifecycle === "INHOUSE"),
+        false
+      ),
+    [reservations, systemToday, searchQuery, paymentFilter, onlyMultiRoom, sortField, sortDirection, categories]
+  );
+
+  const dueOutsList = useMemo(
+    () => reservations.filter((r) => r.checkOut === systemToday && r.lifecycle === "INHOUSE"),
+    [reservations, systemToday]
+  );
+
+  const checkedOutList = useMemo(
+    () => reservations.filter((r) => r.checkOut === systemToday && r.lifecycle === "CHECKED_OUT"),
+    [reservations, systemToday]
+  );
+
+  const getRoomRackInfo = (room: HotelRoom) => {
+    if (room.physicalStatus === "OUT_OF_ORDER") {
+      return { status: "OUT_OF_ORDER" as RackDisplayStatus, activeRes: undefined };
+    }
+    if (room.physicalStatus === "CLOSED_TO_SALES") {
+      return { status: "CLOSED_TO_SALES" as RackDisplayStatus, activeRes: undefined };
+    }
+    const activeRes = reservations.find(
+      (r) => r.roomNumber === room.roomNumber && r.lifecycle === "INHOUSE"
+    );
+    if (activeRes) {
+      if (activeRes.checkOut === systemToday) {
+        return { status: "DUE_OUT" as RackDisplayStatus, activeRes };
+      }
+      return { status: "INHOUSE" as RackDisplayStatus, activeRes };
+    }
+    return { status: "BOS" as RackDisplayStatus, activeRes: undefined };
+  };
+
+  const renderSortIcon = (field: SortField) => {
+    if (sortField !== field) return <ArrowUpDown className="w-3.5 h-3.5 text-slate-400 opacity-70" />;
+    return sortDirection === "asc" ? (
+      <ArrowUp className="w-3.5 h-3.5 text-sky-600" />
+    ) : (
+      <ArrowDown className="w-3.5 h-3.5 text-sky-600" />
+    );
+  };
+
+  const activeRackRoom = useMemo(
+    () => rooms.find((rm) => rm.roomNumber === rackModalRoomNumber) || null,
+    [rooms, rackModalRoomNumber]
+  );
+
+  return (
+    <div className="flex flex-col h-screen bg-slate-100 text-slate-800 font-sans select-none">
+      {/* ÜST ANA NAVİGASYON BAR */}
+      <header className="flex items-center justify-between px-5 py-2.5 bg-slate-900 text-white border-b border-slate-700 shrink-0">
+        <div className="flex items-center gap-6">
+          <span className="font-extrabold tracking-wider text-sm text-sky-400">STAYFLOW PMS</span>
+
+          <nav className="flex items-center gap-1.5">
+            <button
+              onClick={() => setActiveModule("RESERVATION")}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-bold tracking-wide transition cursor-pointer ${
+                activeModule === "RESERVATION" ? "bg-sky-600 text-white" : "text-slate-300 hover:bg-slate-800"
+              }`}
+            >
+              <Calendar className="w-3.5 h-3.5" />
+              RESERVATION
+            </button>
+
+            <button
+              onClick={() => setActiveModule("ARRIVALS")}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-bold tracking-wide transition cursor-pointer ${
+                activeModule === "ARRIVALS" ? "bg-sky-600 text-white" : "text-slate-300 hover:bg-slate-800"
+              }`}
+            >
+              <LogIn className="w-3.5 h-3.5" />
+              ARRIVALS
+              <span className="ml-1 bg-emerald-500 text-slate-950 px-1.5 rounded-full text-[10px]">
+                {pendingArrivals.length}
+              </span>
+            </button>
+
+            <button
+              onClick={() => setActiveModule("INHOUSE_RACK")}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-bold tracking-wide transition cursor-pointer ${
+                activeModule === "INHOUSE_RACK" ? "bg-sky-600 text-white" : "text-slate-300 hover:bg-slate-800"
+              }`}
+            >
+              <BedDouble className="w-3.5 h-3.5" />
+              INHOUSE / RACK
+            </button>
+
+            <button
+              onClick={() => setActiveModule("DUE_OUTS")}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-bold tracking-wide transition cursor-pointer ${
+                activeModule === "DUE_OUTS" ? "bg-sky-600 text-white" : "text-slate-300 hover:bg-slate-800"
+              }`}
+            >
+              <LogOut className="w-3.5 h-3.5" />
+              DUE OUTS
+              <span className="ml-1 bg-amber-400 text-slate-950 px-1.5 rounded-full text-[10px]">
+                {dueOutsList.length}
+              </span>
+            </button>
+          </nav>
+        </div>
+
+        <div className="flex items-center gap-3">
+          <span className="text-xs text-slate-300 hidden sm:inline">
+            Tarih: <b className="text-white">{formatTrDate(systemToday)}</b>
+          </span>
+          <button
+            onClick={() => setShowExtraModules(!showExtraModules)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-slate-800 hover:bg-slate-700 border border-slate-600 text-xs font-semibold text-emerald-400 cursor-pointer"
+          >
+            <Grid className="w-3.5 h-3.5" />
+            Diğer Modüller (5-8)
+          </button>
+        </div>
+      </header>
+
+      {/* ONCLICK DİĞER MODÜLLER (5-8) YER TUTUCU BANDI */}
+      {showExtraModules && (
+        <div className="bg-slate-800 text-white px-5 py-2 border-b border-slate-700 flex items-center gap-2 text-xs">
+          <span className="text-slate-400 font-semibold">Sonra Tanımlanacak Modüller:</span>
+          <span className="px-2.5 py-1 rounded bg-slate-700 text-slate-300">5. Modül</span>
+          <span className="px-2.5 py-1 rounded bg-slate-700 text-slate-300">6. Modül</span>
+          <span className="px-2.5 py-1 rounded bg-slate-700 text-slate-300">7. Modül</span>
+          <span className="px-2.5 py-1 rounded bg-slate-700 text-slate-300">8. Modül</span>
+        </div>
+      )}
+
+      {/* ====================================================================
+          ANA ÇALIŞMA ALANI
+         ==================================================================== */}
+      <main className="flex-1 p-5 overflow-auto">
+        {/* ------------------------------------------------------------------
+            1. MODÜL: RESERVATION
+           ------------------------------------------------------------------ */}
+        {activeModule === "RESERVATION" && (
+          <div className="flex flex-col gap-3 max-w-7xl mx-auto">
+            <div className="flex flex-wrap items-center justify-between gap-3 bg-white p-3 rounded-lg border border-slate-300 shadow-xs">
+              <div className="flex flex-wrap items-center gap-3 flex-1">
+                <div className="relative w-72">
+                  <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    placeholder="İsim, soyisim, rez no veya oda no ara..."
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    className="w-full pl-9 pr-3 py-1.5 text-xs border border-slate-300 rounded-md focus:outline-none focus:border-sky-600"
+                  />
+                </div>
+
+                <div className="flex items-center gap-1.5 text-xs">
+                  <span className="text-slate-500 font-semibold">Giriş Tarihi:</span>
+                  <select
+                    value={dateFilter}
+                    onChange={(e) => setDateFilter(e.target.value)}
+                    className="border border-slate-300 rounded-md px-2.5 py-1.5 bg-white font-medium"
+                  >
+                    <option value="ALL">Tüm Tarihler</option>
+                    {Array.from(new Set(reservations.map((r) => r.checkIn)))
+                      .sort()
+                      .map((d) => (
+                        <option key={d} value={d}>
+                          {formatTrDate(d)}
+                        </option>
+                      ))}
+                  </select>
+                </div>
+
+                <div className="flex items-center gap-1.5 text-xs">
+                  <span className="text-slate-500 font-semibold">Ödeme:</span>
+                  <select
+                    value={paymentFilter}
+                    onChange={(e) => setPaymentFilter(e.target.value as "ALL" | PaymentStatus)}
+                    className="border border-slate-300 rounded-md px-2.5 py-1.5 bg-white font-medium"
+                  >
+                    <option value="ALL">Tümü</option>
+                    <option value="ODENDI">Ödendi</option>
+                    <option value="KISMI_ODENDI">Kısmi Ödendi</option>
+                    <option value="ODENMEDI">Ödenmedi</option>
+                  </select>
+                </div>
+
+                <label className="flex items-center gap-2 px-3 py-1.5 rounded-md border border-rose-300 bg-rose-50/70 text-xs font-bold text-rose-900 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={onlyMultiRoom}
+                    onChange={(e) => setOnlyMultiRoom(e.target.checked)}
+                    className="accent-rose-600 rounded"
+                  />
+                  <Layers className="w-3.5 h-3.5 text-rose-600" />
+                  Çoklu Oda Rezervasyonları
+                </label>
+              </div>
+
+              <button
+                onClick={() => setResModal({ isOpen: true, mode: "CREATE", target: null })}
+                className="flex items-center gap-1.5 px-3.5 py-2 rounded-md bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold tracking-wide shadow-xs cursor-pointer"
+              >
+                <Plus className="w-4 h-4" />
+                YENİ REZERVASYON
+              </button>
+            </div>
+
+            {/* Sıralama Satırı */}
+            <div className="grid grid-cols-12 items-center px-4 py-2 bg-slate-200/90 border border-slate-300 rounded-md text-[11px] font-extrabold uppercase tracking-wider text-slate-700">
+              <button onClick={() => handleSort("resCode")} className="col-span-1 flex items-center gap-1 cursor-pointer text-left">
+                <span>REZ NO</span>
+                {renderSortIcon("resCode")}
+              </button>
+              <button onClick={() => handleSort("roomNumber")} className="col-span-1 flex items-center gap-1 cursor-pointer text-left">
+                <span>ODA</span>
+                {renderSortIcon("roomNumber")}
+              </button>
+              <button onClick={() => handleSort("guestName")} className="col-span-3 flex items-center gap-1 cursor-pointer text-left">
+                <span>MİSAFİR ADI SOYADI</span>
+                {renderSortIcon("guestName")}
+              </button>
+              <button onClick={() => handleSort("checkIn")} className="col-span-3 flex items-center gap-1 cursor-pointer text-left">
+                <span>GİRİŞ → ÇIKIŞ TARİHİ</span>
+                {renderSortIcon("checkIn")}
+              </button>
+              <button onClick={() => handleSort("category")} className="col-span-2 flex items-center gap-1 cursor-pointer text-left">
+                <span>ODA KATEGORİSİ</span>
+                {renderSortIcon("category")}
+              </button>
+              <button onClick={() => handleSort("paidAmount")} className="col-span-1 flex items-center justify-end gap-1 cursor-pointer text-right">
+                <span>ÖDEME</span>
+                {renderSortIcon("paidAmount")}
+              </button>
+              <div className="col-span-1 text-right text-slate-500">İŞLEM</div>
+            </div>
+
+            {/* Rezervasyon Satırları */}
+            <div className="flex flex-col gap-1.5">
+              {allReservationsSorted.map((row) => {
+                const fullName = `${row.firstName} ${row.lastName}`;
+                const isMulti = multiRoomKeys.has(row.groupId || fullName);
+
+                return (
+                  <div
+                    key={row.id}
+                    onDoubleClick={() => setResModal({ isOpen: true, mode: "EDIT", target: row })}
+                    title="Rezervasyon kartını açmak için çift tıklayın"
+                    className={`grid grid-cols-12 items-center px-4 py-2.5 rounded-md border text-xs transition cursor-pointer ${
+                      isMulti
+                        ? "bg-rose-100/80 border-rose-300 hover:bg-rose-100"
+                        : "bg-white border-slate-200 hover:border-slate-300 hover:bg-slate-50"
+                    }`}
+                  >
+                    <div className="col-span-1 font-mono font-bold text-slate-700">{row.resCode}</div>
+                    <div className="col-span-1">
+                      {row.roomNumber ? (
+                        <span className="px-2.5 py-0.5 rounded bg-slate-800 text-white font-bold text-xs">
+                          {row.roomNumber}
+                        </span>
+                      ) : (
+                        <span className="px-2 py-0.5 rounded border border-dashed border-slate-400 text-slate-400 font-semibold text-[10px]">
+                          BOŞ
+                        </span>
+                      )}
+                    </div>
+                    <div className="col-span-3 font-bold text-slate-900 truncate pr-2 flex items-center gap-1.5">
+                      <span>{fullName}</span>
+                      {isMulti && <span className="text-[10px] font-extrabold text-rose-700">(Çoklu Oda)</span>}
+                      {row.notes && <StickyNote className="w-3.5 h-3.5 text-sky-600 shrink-0" />}
+                    </div>
+                    <div className="col-span-3 font-medium text-slate-700">
+                      {formatTrDate(row.checkIn)} → {formatTrDate(row.checkOut)}{" "}
+                      <span className="text-slate-500">({row.nights} Gece)</span>
+                    </div>
+                    <div className="col-span-2 text-slate-700 font-semibold truncate pr-2">
+                      {getCategoryName(row.categoryId)}
+                    </div>
+                    <div className="col-span-1 text-right leading-tight">
+                      {row.paymentStatus === "ODENDI" && (
+                        <>
+                          <div className="font-extrabold text-[10px] text-emerald-700">ÖDENDİ</div>
+                          <div className="font-bold text-slate-900">{row.paidAmount.toLocaleString("tr-TR")} TL</div>
+                        </>
+                      )}
+                      {row.paymentStatus === "KISMI_ODENDI" && (
+                        <>
+                          <div className="font-extrabold text-[10px] text-amber-700">KISMİ ÖDENDİ</div>
+                          <div className="font-bold text-slate-900">{row.paidAmount.toLocaleString("tr-TR")} TL</div>
+                        </>
+                      )}
+                      {row.paymentStatus === "ODENMEDI" && (
+                        <>
+                          <div className="font-extrabold text-[10px] text-rose-700">ÖDENMEDİ</div>
+                          <div className="font-bold text-slate-900">0 TL</div>
+                        </>
+                      )}
+                    </div>
+                    <div className="col-span-1 flex items-center justify-end gap-1.5 text-slate-500">
+                      <button
+                        onClick={() => setResModal({ isOpen: true, mode: "EDIT", target: row })}
+                        className="p-1 hover:text-slate-900 cursor-pointer"
+                      >
+                        <Eye className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        onClick={() => setResModal({ isOpen: true, mode: "EDIT", target: row })}
+                        className="p-1 hover:text-slate-900 cursor-pointer"
+                      >
+                        <Pencil className="w-3.5 h-3.5" />
+                      </button>
+                      <button className="p-1 hover:text-slate-900 cursor-pointer">
+                        <Printer className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* ------------------------------------------------------------------
+            2. MODÜL: ARRIVALS (ÜST: GİRİŞ BEKLEYENLER | ALT: CHECKED IN)
+           ------------------------------------------------------------------ */}
+        {activeModule === "ARRIVALS" && (
+          <div className="flex flex-col gap-4 max-w-7xl mx-auto">
+            <section className="flex flex-col gap-2">
+              <div className="flex items-center justify-between px-1">
+                <div className="flex items-center gap-2">
+                  <LogIn className="w-4 h-4 text-sky-600" />
+                  <h2 className="font-extrabold text-xs uppercase tracking-wider text-slate-800">
+                    ARRIVALS — BUGÜN GİRİŞ BEKLEYENLER ({pendingArrivals.length})
+                  </h2>
+                </div>
+                <button
+                  onClick={() => setResModal({ isOpen: true, mode: "CREATE", target: null })}
+                  className="flex items-center gap-1 px-3 py-1.5 rounded bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold cursor-pointer"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  YENİ REZERVASYON
+                </button>
+              </div>
+
+              <div className="flex flex-col gap-1.5">
+                {pendingArrivals.map((row) => {
+                  const fullName = `${row.firstName} ${row.lastName}`;
+                  const isMulti = multiRoomKeys.has(row.groupId || fullName);
+                  return (
+                    <div
+                      key={row.id}
+                      onDoubleClick={() => setResModal({ isOpen: true, mode: "EDIT", target: row })}
+                      title="Rezervasyon kartını açmak için çift tıklayın"
+                      className={`grid grid-cols-12 items-center px-4 py-2.5 rounded-md border text-xs transition cursor-pointer ${
+                        isMulti
+                          ? "bg-rose-100/80 border-rose-300 hover:bg-rose-100"
+                          : "bg-white border-slate-200 hover:bg-slate-50"
+                      }`}
+                    >
+                      <div className="col-span-1 font-mono font-bold text-slate-700">{row.resCode}</div>
+                      <div className="col-span-1">
+                        {row.roomNumber ? (
+                          <span className="px-2.5 py-0.5 rounded bg-slate-800 text-white font-bold text-xs">
+                            {row.roomNumber}
+                          </span>
+                        ) : (
+                          <span className="px-2 py-0.5 rounded border border-dashed border-slate-400 text-slate-400 font-semibold text-[10px]">
+                            BOŞ
+                          </span>
+                        )}
+                      </div>
+                      <div className="col-span-3 font-bold text-slate-900 truncate pr-2 flex items-center gap-1.5">
+                        <span>{fullName}</span>
+                        {isMulti && <span className="text-[10px] font-extrabold text-rose-700">(Çoklu Oda)</span>}
+                        {row.notes && <StickyNote className="w-3.5 h-3.5 text-sky-600 shrink-0" />}
+                      </div>
+                      <div className="col-span-3 font-medium text-slate-700">
+                        {formatTrDate(row.checkIn)} → {formatTrDate(row.checkOut)} ({row.nights} Gece)
+                      </div>
+                      <div className="col-span-2 text-slate-700 font-semibold truncate">
+                        {getCategoryName(row.categoryId)}
+                      </div>
+                      <div className="col-span-1 text-right font-bold">
+                        {row.paidAmount.toLocaleString("tr-TR")} TL
+                      </div>
+                      <div className="col-span-1 flex justify-end">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleCheckIn(row);
+                          }}
+                          className="px-2.5 py-1.5 rounded bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-[11px] tracking-wide shadow-xs cursor-pointer"
+                        >
+                          CHECK IN
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+                {pendingArrivals.length === 0 && (
+                  <div className="p-5 text-center text-xs text-slate-400 bg-white rounded-md border border-slate-200">
+                    Bugün için giriş bekleyen rezervasyon kalmadı.
+                  </div>
+                )}
+              </div>
+            </section>
+
+            {/* Alt Bölme: CHECKED IN */}
+            <section className="flex flex-col gap-2 mt-2 pt-4 border-t-2 border-slate-300">
+              <div className="flex items-center gap-2 px-1">
+                <CheckCircle2 className="w-4 h-4 text-sky-600" />
+                <h2 className="font-extrabold text-xs uppercase tracking-wider text-sky-900">
+                  CHECKED IN — GİRİŞİ YAPILANLAR ({checkedInToday.length})
+                </h2>
+              </div>
+
+              <div className="flex flex-col gap-1.5">
+                {checkedInToday.map((row) => (
+                  <div
+                    key={row.id}
+                    onDoubleClick={() => setResModal({ isOpen: true, mode: "EDIT", target: row })}
+                    className="grid grid-cols-12 items-center px-4 py-2 rounded-md border border-sky-200 bg-sky-50/80 text-xs text-slate-700 cursor-pointer"
+                  >
+                    <div className="col-span-1 font-mono font-bold text-slate-500">{row.resCode}</div>
+                    <div className="col-span-1">
+                      <span className="px-2.5 py-0.5 rounded bg-sky-700 text-white font-bold text-xs">
+                        {row.roomNumber}
+                      </span>
+                    </div>
+                    <div className="col-span-3 font-bold text-slate-800 flex items-center gap-2">
+                      <span>
+                        {row.firstName} {row.lastName}
+                      </span>
+                      <span className="px-2 py-0.5 rounded bg-sky-200 text-sky-900 font-extrabold text-[10px]">
+                        INHOUSE
+                      </span>
+                    </div>
+                    <div className="col-span-3 font-medium text-slate-600">
+                      {formatTrDate(row.checkIn)} → {formatTrDate(row.checkOut)} ({row.nights} Gece)
+                    </div>
+                    <div className="col-span-2 text-slate-600 font-medium truncate">
+                      {getCategoryName(row.categoryId)}
+                    </div>
+                    <div className="col-span-1 text-right font-bold">
+                      {row.paidAmount.toLocaleString("tr-TR")} TL
+                    </div>
+                    <div className="col-span-1 flex items-center justify-end gap-2">
+                      {row.checkedInAt && (
+                        <span className="flex items-center gap-0.5 text-[11px] font-bold text-emerald-700">
+                          <Clock className="w-3 h-3" />
+                          {row.checkedInAt}
+                        </span>
+                      )}
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleUndoCheckIn(row);
+                        }}
+                        title="Girişi Geri Al"
+                        className="p-1 rounded hover:bg-sky-200 text-slate-500 cursor-pointer"
+                      >
+                        <Undo2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+          </div>
+        )}
+
+        {/* ------------------------------------------------------------------
+            3. MODÜL: INHOUSE / RACK (4 KAT x 5 ODA = 20 ODA)
+           ------------------------------------------------------------------ */}
+        {activeModule === "INHOUSE_RACK" && (
+          <div className="flex flex-col gap-4 max-w-7xl mx-auto">
+            <div className="flex items-center justify-between flex-wrap gap-2 bg-white px-4 py-2.5 rounded-lg border border-slate-300 shadow-xs">
+              <div className="flex items-center gap-1.5 text-xs font-bold text-slate-600">
+                <Filter className="w-3.5 h-3.5" />
+                <span>DURUM FİLTRESİ:</span>
+                <button
+                  onClick={() => setRackFilter("ALL")}
+                  className={`px-2.5 py-1 rounded cursor-pointer ${
+                    rackFilter === "ALL" ? "bg-slate-800 text-white" : "bg-slate-100 text-slate-600"
+                  }`}
+                >
+                  TÜMÜ ({rooms.length})
+                </button>
+              </div>
+
+              <div className="flex items-center gap-2 flex-wrap">
+                {(Object.keys(RACK_STATUS_STYLES) as RackDisplayStatus[]).map((st) => {
+                  const cfg = RACK_STATUS_STYLES[st];
+                  return (
+                    <button
+                      key={st}
+                      onClick={() => setRackFilter(rackFilter === st ? "ALL" : st)}
+                      className={`px-2.5 py-1 rounded text-[11px] font-bold cursor-pointer ${cfg.badgeBg} ${cfg.badgeText} ${
+                        rackFilter === st ? "ring-2 ring-slate-900 ring-offset-1" : ""
+                      }`}
+                    >
+                      {cfg.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-3">
+              {[1, 2, 3, 4].map((floorNum) => (
+                <div key={floorNum} className="flex items-stretch gap-3">
+                  <div className="w-20 shrink-0 flex items-center justify-center font-extrabold text-sm text-slate-700 bg-white border border-slate-300 rounded-xl shadow-2xs">
+                    {floorNum}. Kat
+                  </div>
+
+                  <div className="flex-1 grid grid-cols-1 sm:grid-cols-2 md:grid-cols-5 gap-3">
+                    {rooms
+                      .filter((r) => r.floor === floorNum)
+                      .map((room) => {
+                        const { status, activeRes } = getRoomRackInfo(room);
+                        const styleCfg = RACK_STATUS_STYLES[status];
+                        const reqs = roomRequests[room.roomNumber] || {
+                          teknik: "",
+                          hk: "",
+                          resepsiyon: "",
+                        };
+                        const hasReqs = reqs.teknik || reqs.hk || reqs.resepsiyon;
+                        const isDimmed = rackFilter !== "ALL" && rackFilter !== status;
+
+                        return (
+                          <div
+                            key={room.roomNumber}
+                            onDoubleClick={() => handleOpenRackCard(room)}
+                            title="Oda kartını ve durum butonlarını açmak için çift tıklayın"
+                            className={`relative rounded-xl border-2 px-3 py-2.5 flex flex-col items-center justify-between text-center shadow-2xs transition cursor-pointer hover:shadow-md ${styleCfg.cardBg} ${styleCfg.cardBorder} ${
+                              isDimmed ? "opacity-25" : "opacity-100"
+                            }`}
+                          >
+                            {hasReqs && (
+                              <div className="absolute top-1.5 right-1.5 flex gap-1">
+                                {reqs.teknik && <Wrench className="w-3.5 h-3.5 text-rose-600" title="Teknik Talep" />}
+                                {reqs.hk && <Sparkles className="w-3.5 h-3.5 text-sky-600" title="HK Talep" />}
+                                {reqs.resepsiyon && (
+                                  <MessageSquare className="w-3.5 h-3.5 text-amber-600" title="Resepsiyon Talep" />
+                                )}
+                              </div>
+                            )}
+
+                            <div className="font-extrabold text-base text-slate-900 leading-tight">
+                              {room.roomNumber}
+                            </div>
+                            <div className="text-[11px] font-semibold text-slate-600 truncate w-full mt-0.5">
+                              {getCategoryName(room.categoryId)}
+                            </div>
+                            <div className="text-xs font-bold text-slate-900 truncate w-full my-1">
+                              {activeRes ? `${activeRes.firstName} ${activeRes.lastName}` : "—"}
+                            </div>
+                            <span
+                              className={`px-2.5 py-0.5 rounded text-[10px] font-extrabold uppercase tracking-wider ${styleCfg.badgeBg} ${styleCfg.badgeText}`}
+                            >
+                              {styleCfg.label}
+                            </span>
+                          </div>
+                        );
+                      })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* ------------------------------------------------------------------
+            4. MODÜL: DUE OUTS & CHECKED OUT
+           ------------------------------------------------------------------ */}
+        {activeModule === "DUE_OUTS" && (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 h-full max-w-7xl mx-auto">
+            <section className="bg-white border border-slate-300 rounded-lg shadow-xs flex flex-col overflow-hidden">
+              <div className="px-4 py-2.5 bg-slate-200 border-b border-slate-300 flex items-center justify-between">
+                <span className="font-bold text-xs tracking-wider text-slate-800">
+                  DUE OUTS ({dueOutsList.length})
+                </span>
+                <span className="text-[11px] text-slate-600 font-medium">
+                  Bakiyeli odalarda kalan tutarı <b>ÖDEME AL</b> kutusuna girerek Check-Out açın
+                </span>
+              </div>
+
+              <div className="p-3 flex flex-col gap-2.5 overflow-y-auto">
+                {dueOutsList.map((res) => {
+                  const balance = Math.max(0, res.totalAmount - res.paidAmount);
+                  const rawInput = dueOutPaymentInputs[res.id] ?? "";
+                  const enteredAmount = Number(rawInput) || 0;
+                  const isPaymentMatched =
+                    balance === 0 || res.paidAmount + enteredAmount === res.totalAmount;
+
+                  return (
+                    <div
+                      key={res.id}
+                      className="flex flex-col gap-2 p-2.5 rounded-md border border-slate-200 bg-slate-50 hover:bg-white transition"
+                    >
+                      <div className="flex items-center justify-between gap-2 flex-wrap">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="px-2.5 py-0.5 rounded bg-slate-900 text-white font-bold text-xs">
+                            {res.roomNumber}
+                          </span>
+                          <span className="font-bold text-xs text-slate-900">
+                            {res.firstName} {res.lastName}
+                          </span>
+                          <span className="px-2 py-0.5 rounded bg-slate-200 text-slate-700 font-semibold text-[11px]">
+                            {res.nights} Nights
+                          </span>
+                          <span
+                            className={`px-2 py-0.5 rounded font-bold text-[11px] text-white ${
+                              isPaymentMatched ? "bg-emerald-600" : "bg-rose-600"
+                            }`}
+                          >
+                            BALANCE:{" "}
+                            {isPaymentMatched
+                              ? "0 TL"
+                              : `${(balance - enteredAmount).toLocaleString("tr-TR")} TL`}
+                          </span>
+                        </div>
+
+                        {isPaymentMatched && (
+                          <button
+                            onClick={() => handleCheckOut(res, balance > 0 ? enteredAmount : 0)}
+                            className="shrink-0 px-3 py-1 rounded bg-amber-500 hover:bg-amber-600 text-white font-bold text-[11px] tracking-wide shadow-xs cursor-pointer transition"
+                          >
+                            CHECK OUT
+                          </button>
+                        )}
+                      </div>
+
+                      {balance > 0 && (
+                        <div className="flex items-center justify-between gap-2 pt-2 border-t border-slate-200 text-xs">
+                          <div className="flex items-center gap-2">
+                            <label className="font-extrabold text-rose-700 text-[11px]">
+                              ÖDEME AL:
+                            </label>
+                            <input
+                              type="number"
+                              min={0}
+                              placeholder={`Kalan: ${balance} TL`}
+                              value={rawInput}
+                              onChange={(e) =>
+                                setDueOutPaymentInputs((prev) => ({
+                                  ...prev,
+                                  [res.id]: e.target.value,
+                                }))
+                              }
+                              className={`w-36 px-2.5 py-1 rounded border text-xs font-bold bg-white focus:outline-none ${
+                                isPaymentMatched
+                                  ? "border-emerald-500 text-emerald-900 ring-1 ring-emerald-400"
+                                  : "border-rose-300 text-slate-900"
+                              }`}
+                            />
+                            <span className="text-[11px] text-slate-500">
+                              (Toplam: {res.totalAmount.toLocaleString("tr-TR")} TL)
+                            </span>
+                          </div>
+
+                          {!isPaymentMatched && (
+                            <span className="text-[10px] font-bold text-rose-600">
+                              Kalan {balance.toLocaleString("tr-TR")} TL girilince Check-Out açılır
+                            </span>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+                {dueOutsList.length === 0 && (
+                  <div className="p-8 text-center text-xs text-slate-400">
+                    Çıkış bekleyen oda kalmadı.
+                  </div>
+                )}
+              </div>
+            </section>
+
+            <section className="bg-white border border-slate-300 rounded-lg shadow-xs flex flex-col overflow-hidden">
+              <div className="px-4 py-2.5 bg-slate-200 border-b border-slate-300 flex items-center justify-between">
+                <span className="font-bold text-xs tracking-wider text-slate-700">
+                  CHECKED OUT ({checkedOutList.length})
+                </span>
+              </div>
+
+              <div className="p-3 flex flex-col gap-2.5 overflow-y-auto">
+                {checkedOutList.map((res) => (
+                  <div
+                    key={res.id}
+                    className="flex items-center justify-between gap-2 p-2.5 rounded-md border border-slate-200 bg-slate-100 opacity-60 grayscale"
+                  >
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="px-2.5 py-0.5 rounded bg-slate-600 text-white font-bold text-xs line-through">
+                        {res.roomNumber}
+                      </span>
+                      <span className="font-semibold text-xs text-slate-700">
+                        {res.firstName} {res.lastName}
+                      </span>
+                      <span className="px-2 py-0.5 rounded bg-slate-200 text-slate-600 font-bold text-[10px]">
+                        CHECKED OUT
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-2 shrink-0 text-[11px] text-slate-700 font-semibold">
+                      <span className="flex items-center gap-0.5">
+                        <CheckCircle2 className="w-3.5 h-3.5" />
+                        <Clock className="w-3 h-3" />
+                        {res.checkedOutAt}
+                      </span>
+                      <span className="flex items-center gap-0.5 text-rose-700 font-bold" title="Oda Kirli">
+                        <Sparkles className="w-3.5 h-3.5" />
+                        DIRTY
+                      </span>
+                      <button title="Fatura / Makbuz" className="p-1 rounded hover:bg-slate-200 cursor-pointer">
+                        <FileText className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        onClick={() => handleUndoCheckOut(res)}
+                        title="Çıkışı Geri Al (Undo)"
+                        className="p-1 rounded hover:bg-slate-200 cursor-pointer"
+                      >
+                        <Undo2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+          </div>
+        )}
+      </main>
+
+      {/* ====================================================================
+          ORTAK REZERVASYON KARTI MODALI (RESERVATION & ARRIVALS)
+         ==================================================================== */}
+      {resModal.isOpen && (
+        <ReservationCardModal
+          isOpen={resModal.isOpen}
+          mode={resModal.mode}
+          initialData={resModal.target}
+          categories={categories}
+          onUpdateCategories={setCategories}
+          defaultCheckInDate={systemToday}
+          onClose={() => setResModal({ isOpen: false, mode: "CREATE", target: null })}
+          onSave={handleSaveReservation}
+        />
+      )}
+
+      {/* ====================================================================
+          INHOUSE / RACK OPERASYON & ODA DURUM YÖNETİM KARTI MODALI
+         ==================================================================== */}
+      {activeRackRoom && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center z-40 p-4">
+          <div className="bg-white rounded-lg shadow-2xl border border-slate-300 w-full max-w-2xl overflow-hidden flex flex-col max-h-[90vh]">
+            <div className="flex items-center justify-between px-4 py-3 bg-slate-900 text-white shrink-0">
+              <span className="font-bold text-sm tracking-wide">
+                ODA {activeRackRoom.roomNumber} — OPERASYON & REZERVASYON KARTI
+              </span>
+              <button
+                onClick={() => setRackModalRoomNumber(null)}
+                className="text-slate-400 hover:text-white cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {(() => {
+              const { status, activeRes } = getRoomRackInfo(activeRackRoom);
+              const isBlocked =
+                activeRackRoom.physicalStatus === "OUT_OF_ORDER" ||
+                activeRackRoom.physicalStatus === "CLOSED_TO_SALES";
+
+              return (
+                <div className="p-4 overflow-y-auto grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
+                  <div className="flex flex-col gap-3 self-start">
+                    <div className="flex flex-col gap-2 p-3 bg-slate-50 rounded-lg border border-slate-200">
+                      <h3 className="font-bold text-slate-700 border-b pb-1.5 mb-1 uppercase text-[11px]">
+                        Oda & Rezervasyon Bilgileri
+                      </h3>
+                      <div className="flex justify-between py-1 border-b border-slate-100">
+                        <span className="text-slate-500">Oda Durumu</span>
+                        <span className="font-extrabold text-slate-900">{RACK_STATUS_STYLES[status].label}</span>
+                      </div>
+                      <div className="flex justify-between py-1 border-b border-slate-100">
+                        <span className="text-slate-500">Kategori</span>
+                        <span className="font-semibold text-slate-800">
+                          {getCategoryName(activeRackRoom.categoryId)}
+                        </span>
+                      </div>
+                      <div className="flex justify-between py-1 border-b border-slate-100">
+                        <span className="text-slate-500">Misafir</span>
+                        <span className="font-bold text-slate-900">
+                          {activeRes ? `${activeRes.firstName} ${activeRes.lastName}` : "Boş Oda"}
+                        </span>
+                      </div>
+                      {activeRes && (
+                        <>
+                          <div className="flex justify-between py-1 border-b border-slate-100">
+                            <span className="text-slate-500">Giriş / Çıkış</span>
+                            <span>
+                              {formatTrDate(activeRes.checkIn)} → {formatTrDate(activeRes.checkOut)}
+                            </span>
+                          </div>
+                          <div className="flex justify-between py-1 border-b border-slate-100">
+                            <span className="text-slate-500">Toplam / Ödenen</span>
+                            <span className="font-bold text-emerald-700">
+                              {activeRes.totalAmount.toLocaleString("tr-TR")} TL /{" "}
+                              {activeRes.paidAmount.toLocaleString("tr-TR")} TL
+                            </span>
+                          </div>
+                          {activeRes.notes && (
+                            <div className="pt-1">
+                              <span className="text-slate-500 block mb-0.5">Rezervasyon Notu:</span>
+                              <p className="p-2 bg-white border border-slate-200 rounded text-slate-700">
+                                {activeRes.notes}
+                              </p>
+                            </div>
+                          )}
+                        </>
+                      )}
+                    </div>
+
+                    <div className="p-3 bg-slate-50 rounded-lg border border-slate-300 flex flex-col gap-2">
+                      <span className="font-extrabold text-[11px] uppercase tracking-wider text-slate-700">
+                        Oda Satış & Arıza Durumu
+                      </span>
+
+                      {activeRes ? (
+                        <p className="text-[11px] text-slate-500">
+                          Odada aktif konaklayan misafir varken satışa kapatma veya arıza kaydı açılamaz.
+                        </p>
+                      ) : (
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              handleSetRoomPhysicalStatus(activeRackRoom.roomNumber, "OUT_OF_ORDER")
+                            }
+                            className={`flex items-center gap-1 px-2.5 py-1.5 rounded font-bold text-[11px] cursor-pointer transition ${
+                              activeRackRoom.physicalStatus === "OUT_OF_ORDER"
+                                ? "bg-slate-700 text-white ring-2 ring-slate-900"
+                                : "bg-slate-200 hover:bg-slate-300 text-slate-800"
+                            }`}
+                          >
+                            <Wrench className="w-3.5 h-3.5" />
+                            OUT OF ORDER
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() =>
+                              handleSetRoomPhysicalStatus(activeRackRoom.roomNumber, "CLOSED_TO_SALES")
+                            }
+                            className={`flex items-center gap-1 px-2.5 py-1.5 rounded font-bold text-[11px] cursor-pointer transition ${
+                              activeRackRoom.physicalStatus === "CLOSED_TO_SALES"
+                                ? "bg-rose-600 text-white ring-2 ring-rose-900"
+                                : "bg-rose-100 hover:bg-rose-200 text-rose-900 border border-rose-300"
+                            }`}
+                          >
+                            <Ban className="w-3.5 h-3.5" />
+                            CLOSED TO SALES
+                          </button>
+
+                          {isBlocked && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                handleSetRoomPhysicalStatus(activeRackRoom.roomNumber, "AVAILABLE")
+                              }
+                              className="flex items-center gap-1 px-3 py-1.5 rounded bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold text-[11px] shadow-xs cursor-pointer transition"
+                            >
+                              <ShieldCheck className="w-3.5 h-3.5" />
+                              SOLVED
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Sağ Sütun: Odaya Özel Departman Talepleri */}
+                  <div className="flex flex-col gap-3">
+                    <div className="flex flex-col gap-1.5 p-2.5 border border-slate-200 rounded-lg bg-slate-50/50">
+                      <span className="font-bold text-slate-800 flex items-center gap-1">
+                        <Wrench className="w-3.5 h-3.5 text-rose-600" /> TEKNİK TALEP
+                      </span>
+                      <textarea
+                        rows={2}
+                        value={draftTeknik}
+                        onChange={(e) => setDraftTeknik(e.target.value)}
+                        placeholder="Odaya özel teknik arıza notu..."
+                        className="w-full border border-slate-300 rounded p-1.5 bg-white text-xs"
+                      />
+                      <div className="flex gap-2 justify-end">
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteRoomReq("teknik")}
+                          className="flex items-center gap-1 px-2.5 py-1 rounded border border-slate-300 bg-white hover:bg-slate-100 text-slate-600 cursor-pointer"
+                        >
+                          <Trash2 className="w-3 h-3" /> SİL
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleSaveRoomReq("teknik", draftTeknik)}
+                          className="flex items-center gap-1 px-3 py-1 rounded bg-blue-600 hover:bg-blue-700 text-white font-bold cursor-pointer"
+                        >
+                          <Save className="w-3 h-3" /> KAYDET
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-col gap-1.5 p-2.5 border border-slate-200 rounded-lg bg-slate-50/50">
+                      <span className="font-bold text-slate-800 flex items-center gap-1">
+                        <Sparkles className="w-3.5 h-3.5 text-sky-600" /> HK TALEP
+                      </span>
+                      <textarea
+                        rows={2}
+                        value={draftHk}
+                        onChange={(e) => setDraftHk(e.target.value)}
+                        placeholder="Kat hizmetleri / temizlik notu..."
+                        className="w-full border border-slate-300 rounded p-1.5 bg-white text-xs"
+                      />
+                      <div className="flex gap-2 justify-end">
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteRoomReq("hk")}
+                          className="flex items-center gap-1 px-2.5 py-1 rounded border border-slate-300 bg-white hover:bg-slate-100 text-slate-600 cursor-pointer"
+                        >
+                          <Trash2 className="w-3 h-3" /> SİL
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleSaveRoomReq("hk", draftHk)}
+                          className="flex items-center gap-1 px-3 py-1 rounded bg-blue-600 hover:bg-blue-700 text-white font-bold cursor-pointer"
+                        >
+                          <Save className="w-3 h-3" /> KAYDET
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-col gap-1.5 p-2.5 border border-slate-200 rounded-lg bg-slate-50/50">
+                      <span className="font-bold text-slate-800 flex items-center gap-1">
+                        <MessageSquare className="w-3.5 h-3.5 text-amber-600" /> RESEPSİYON TALEP
+                      </span>
+                      <textarea
+                        rows={2}
+                        value={draftResepsiyon}
+                        onChange={(e) => setDraftResepsiyon(e.target.value)}
+                        placeholder="Uyandırma, transfer, özel talep notu..."
+                        className="w-full border border-slate-300 rounded p-1.5 bg-white text-xs"
+                      />
+                      <div className="flex gap-2 justify-end">
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteRoomReq("resepsiyon")}
+                          className="flex items-center gap-1 px-2.5 py-1 rounded border border-slate-300 bg-white hover:bg-slate-100 text-slate-600 cursor-pointer"
+                        >
+                          <Trash2 className="w-3 h-3" /> SİL
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleSaveRoomReq("resepsiyon", draftResepsiyon)}
+                          className="flex items-center gap-1 px-3 py-1 rounded bg-blue-600 hover:bg-blue-700 text-white font-bold cursor-pointer"
+                        >
+                          <Save className="w-3 h-3" /> KAYDET
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
+
+            <div className="flex justify-end p-3 bg-slate-50 border-t shrink-0">
+              <button
+                onClick={() => setRackModalRoomNumber(null)}
+                className="px-5 py-1.5 rounded border border-slate-300 bg-white hover:bg-slate-100 text-xs font-bold cursor-pointer"
+              >
+                KAPAT
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ====================================================================
+          POP-UP ÇAKIŞMA VE HATA PENCERESİ (EN ÜST KATMAN z-50)
+         ==================================================================== */}
+      {conflictPopup && (
+        <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-xs flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-lg shadow-2xl border-2 border-rose-500 w-full max-w-md overflow-hidden">
+            <div className="flex items-center justify-between px-4 py-3 bg-rose-600 text-white">
+              <div className="flex items-center gap-2">
+                <AlertTriangle className="w-5 h-5 shrink-0" />
+                <h3 className="font-extrabold text-xs tracking-wider uppercase">
+                  {conflictPopup.title}
+                </h3>
+              </div>
+              <button
+                onClick={() => setConflictPopup(null)}
+                className="text-rose-100 hover:text-white cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-4 flex flex-col gap-3 text-xs">
+              <p className="font-semibold text-slate-800 leading-relaxed">
+                {conflictPopup.message}
+              </p>
+
+              {conflictPopup.detailLine && (
+                <div className="p-2.5 rounded bg-rose-50 border border-rose-200 text-rose-900 font-bold text-[11px]">
+                  {conflictPopup.detailLine}
+                </div>
+              )}
+
+              <div className="flex justify-end pt-2 border-t border-slate-200">
+                <button
+                  type="button"
+                  onClick={() => setConflictPopup(null)}
+                  className="px-5 py-2 rounded bg-slate-900 hover:bg-slate-800 text-white font-extrabold tracking-wide cursor-pointer"
+                >
+                  TAMAM
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

@@ -1,0 +1,551 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 1. Global Safety Net (Default Deny)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // 2. Hardened Global Helpers
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isBootstrappedAdmin() {
+      return isVerifiedUser() && request.auth.token.email == 'ajmagichands@gmail.com';
+    }
+
+    function isAdmin() {
+      return isBootstrappedAdmin() || (
+        isVerifiedUser() && exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    function isOwner(data) {
+      return isVerifiedUser() && data.ownerId == request.auth.uid;
+    }
+
+    // 3. Entity Validation Blueprints
+    function isValidFolioEntry(entry) {
+      return entry is map
+        && entry.keys().hasAll(['id', 'serviceNote', 'amount', 'postedAt', 'postedBy'])
+        && entry.keys().hasOnly(['id', 'serviceNote', 'amount', 'postedAt', 'postedBy'])
+        && entry.id is string && entry.id.size() >= 1 && entry.id.size() <= 64
+        && entry.serviceNote is string && entry.serviceNote.size() >= 1 && entry.serviceNote.size() <= 120
+        && entry.amount is number && entry.amount > 0 && entry.amount <= 10000000
+        && entry.postedAt is string && entry.postedAt.size() >= 1 && entry.postedAt.size() <= 64
+        && entry.postedBy is string && entry.postedBy.size() >= 1 && entry.postedBy.size() <= 64;
+    }
+
+    function isValidRatesMap(rates) {
+      return rates is map
+        && rates.keys().hasAll(['TRY', 'EUR', 'USD', 'GBP'])
+        && rates.keys().hasOnly(['TRY', 'EUR', 'USD', 'GBP'])
+        && rates.TRY is number && rates.TRY > 0 && rates.TRY <= 10000
+        && rates.EUR is number && rates.EUR > 0 && rates.EUR <= 10000
+        && rates.USD is number && rates.USD > 0 && rates.USD <= 10000
+        && rates.GBP is number && rates.GBP > 0 && rates.GBP <= 10000;
+    }
+
+    function isValidTcmbRateItem(item, expectedCode) {
+      return item is map
+        && item.keys().hasAll(['code', 'name', 'forexBuying', 'forexSelling'])
+        && item.keys().hasOnly(['code', 'name', 'forexBuying', 'forexSelling'])
+        && item.code == expectedCode
+        && item.name is string && item.name.size() >= 1 && item.name.size() <= 64
+        && item.forexBuying is number && item.forexBuying > 0 && item.forexBuying <= 10000
+        && item.forexSelling is number && item.forexSelling > 0 && item.forexSelling <= 10000;
+    }
+
+    function isValidTcmbRatesMap(tbl) {
+      return tbl is map
+        && tbl.keys().hasAll(['TRY', 'USD', 'EUR', 'GBP'])
+        && tbl.keys().hasOnly(['TRY', 'USD', 'EUR', 'GBP'])
+        && isValidTcmbRateItem(tbl.TRY, 'TRY')
+        && isValidTcmbRateItem(tbl.USD, 'USD')
+        && isValidTcmbRateItem(tbl.EUR, 'EUR')
+        && isValidTcmbRateItem(tbl.GBP, 'GBP');
+    }
+
+    function isValidCheckInRates(cr) {
+      return cr is map
+        && cr.keys().hasAll(['TRY', 'EUR', 'USD', 'GBP', 'lockedDate', 'bulletinDate', 'source'])
+        && cr.keys().hasOnly(['TRY', 'EUR', 'USD', 'GBP', 'lockedDate', 'bulletinDate', 'source'])
+        && cr.TRY is number && cr.TRY > 0 && cr.TRY <= 10000
+        && cr.EUR is number && cr.EUR > 0 && cr.EUR <= 10000
+        && cr.USD is number && cr.USD > 0 && cr.USD <= 10000
+        && cr.GBP is number && cr.GBP > 0 && cr.GBP <= 10000
+        && cr.lockedDate is string && cr.lockedDate.size() == 10 && cr.lockedDate.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && cr.bulletinDate is string && cr.bulletinDate.size() >= 1 && cr.bulletinDate.size() <= 64
+        && cr.source is string && cr.source.size() >= 1 && cr.source.size() <= 32;
+    }
+
+    function isValidCheckInPayment(cp) {
+      return cp is map
+        && cp.keys().hasAll(['amount', 'currency', 'lockedRate', 'tlAmount', 'lockedDate', 'savedAt', 'savedBy'])
+        && cp.keys().hasOnly(['amount', 'currency', 'lockedRate', 'tlAmount', 'lockedDate', 'savedAt', 'savedBy'])
+        && cp.amount is number && cp.amount >= 0 && cp.amount <= 100000000
+        && cp.currency in ['USD', 'EUR', 'TRY']
+        && cp.lockedRate is number && cp.lockedRate > 0 && cp.lockedRate <= 10000
+        && cp.tlAmount is number && cp.tlAmount >= 0 && cp.tlAmount <= 100000000
+        && cp.lockedDate is string && cp.lockedDate.size() == 10 && cp.lockedDate.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && cp.savedAt is string && cp.savedAt.size() >= 1 && cp.savedAt.size() <= 64
+        && cp.savedBy is string && cp.savedBy.size() >= 1 && cp.savedBy.size() <= 64;
+    }
+
+    function isValidReservation(data) {
+      return data.keys().hasAll([
+          'id', 'resCode', 'roomNumber', 'firstName', 'lastName',
+          'checkIn', 'checkOut', 'nights', 'categoryId',
+          'paymentStatus', 'paidAmount', 'totalAmount', 'notes',
+          'lifecycle', 'ownerId', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'groupId', 'resCode', 'roomNumber', 'firstName', 'lastName',
+          'checkIn', 'checkOut', 'nights', 'categoryId',
+          'paymentStatus', 'paidAmount', 'totalAmount', 'notes',
+          'lifecycle', 'cancellationReason', 'cancelledAt', 'cancelledBy',
+          'checkedInAt', 'checkedOutAt', 'extraCharges', 'checkInRates',
+          'checkInPayment', 'ownerId', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.id)
+        && (!('groupId' in data) || (data.groupId is string && data.groupId.size() <= 64))
+        && data.resCode is string && data.resCode.size() >= 2 && data.resCode.size() <= 32
+        && (data.roomNumber == null || (data.roomNumber is string && data.roomNumber.size() >= 1 && data.roomNumber.size() <= 16))
+        && data.firstName is string && data.firstName.size() >= 1 && data.firstName.size() <= 80
+        && data.lastName is string && data.lastName.size() >= 1 && data.lastName.size() <= 80
+        && data.checkIn is string && data.checkIn.size() == 10 && data.checkIn.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && data.checkOut is string && data.checkOut.size() == 10 && data.checkOut.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && data.nights is int && data.nights >= 1 && data.nights <= 365
+        && data.categoryId is string && data.categoryId.size() >= 1 && data.categoryId.size() <= 32
+        && data.paymentStatus in ['ODENDI', 'KISMI_ODENDI', 'ODENMEDI']
+        && data.paidAmount is number && data.paidAmount >= 0 && data.paidAmount <= 100000000
+        && data.totalAmount is number && data.totalAmount >= 0 && data.totalAmount <= 100000000
+        && data.notes is string && data.notes.size() <= 1000
+        && data.lifecycle in ['CONFIRMED', 'INHOUSE', 'CHECKED_OUT', 'CANCELLED']
+        && (!('cancellationReason' in data) || (data.cancellationReason is string && data.cancellationReason.size() >= 1 && data.cancellationReason.size() <= 500))
+        && (!('cancelledAt' in data) || (data.cancelledAt is string && data.cancelledAt.size() >= 1 && data.cancelledAt.size() <= 64))
+        && (!('cancelledBy' in data) || (data.cancelledBy is string && data.cancelledBy.size() >= 1 && data.cancelledBy.size() <= 64))
+        && (!('checkedInAt' in data) || (data.checkedInAt is string && data.checkedInAt.size() <= 16))
+        && (!('checkedOutAt' in data) || (data.checkedOutAt is string && data.checkedOutAt.size() <= 16))
+        && (!('extraCharges' in data) || (
+          data.extraCharges is list
+          && data.extraCharges.size() <= 400
+          && (data.extraCharges.size() == 0 || isValidFolioEntry(data.extraCharges[0]))
+        ))
+        && (!('checkInRates' in data) || isValidCheckInRates(data.checkInRates))
+        && (!('checkInPayment' in data) || isValidCheckInPayment(data.checkInPayment))
+        && data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidRoom(data) {
+      return data.keys().hasAll([
+          'roomNumber', 'floor', 'categoryId', 'physicalStatus',
+          'isDirty', 'isLocked', 'ownerId', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'roomNumber', 'floor', 'categoryId', 'physicalStatus',
+          'isDirty', 'isLocked', 'lockedBy', 'lockedAt',
+          'ownerId', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.roomNumber) && data.roomNumber.size() <= 16
+        && data.floor is int && data.floor >= 1 && data.floor <= 50
+        && data.categoryId is string && data.categoryId.size() >= 1 && data.categoryId.size() <= 32
+        && data.physicalStatus in ['AVAILABLE', 'OUT_OF_ORDER', 'CLOSED_TO_SALES']
+        && data.isDirty is bool
+        && data.isLocked is bool
+        && (!('lockedBy' in data) || (data.lockedBy is string && data.lockedBy.size() <= 64))
+        && (!('lockedAt' in data) || (data.lockedAt is string && data.lockedAt.size() <= 64))
+        && data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidRoomRequest(data) {
+      return data.keys().hasAll([
+          'roomNumber', 'teknik', 'hk', 'resepsiyon',
+          'ownerId', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'roomNumber', 'teknik', 'hk', 'resepsiyon',
+          'ownerId', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.roomNumber) && data.roomNumber.size() <= 16
+        && data.teknik is string && data.teknik.size() <= 500
+        && data.hk is string && data.hk.size() <= 500
+        && data.resepsiyon is string && data.resepsiyon.size() <= 500
+        && data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidPmsSettings(data) {
+      return data.keys().hasAll([
+          'id', 'activeBusinessDate', 'ownerId', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'activeBusinessDate', 'lastClosedDate', 'rollback20261113Done',
+          'exchangeRates', 'activeRateType', 'tcmbRates',
+          'ratesDate', 'ratesBulletinDate', 'ratesSource', 'ratesUpdatedAt',
+          'ownerId', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.id)
+        && data.activeBusinessDate is string
+        && data.activeBusinessDate.size() == 10
+        && data.activeBusinessDate.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && (!('lastClosedDate' in data) || (
+          data.lastClosedDate is string
+          && data.lastClosedDate.size() == 10
+          && data.lastClosedDate.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        ))
+        && (!('rollback20261113Done' in data) || data.rollback20261113Done is bool)
+        && (!('exchangeRates' in data) || isValidRatesMap(data.exchangeRates))
+        && (!('activeRateType' in data) || data.activeRateType in ['FOREX_BUYING', 'FOREX_SELLING'])
+        && (!('tcmbRates' in data) || isValidTcmbRatesMap(data.tcmbRates))
+        && (!('ratesDate' in data) || (
+          data.ratesDate is string
+          && data.ratesDate.size() == 10
+          && data.ratesDate.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        ))
+        && (!('ratesBulletinDate' in data) || (data.ratesBulletinDate is string && data.ratesBulletinDate.size() <= 64))
+        && (!('ratesSource' in data) || (data.ratesSource is string && data.ratesSource.size() <= 32))
+        && (!('ratesUpdatedAt' in data) || (data.ratesUpdatedAt is string && data.ratesUpdatedAt.size() <= 64))
+        && data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidEodCategoryItem(item) {
+      return item is map
+        && item.keys().hasAll(['categoryId', 'categoryName', 'totalRooms', 'occupiedRooms', 'rate'])
+        && item.keys().hasOnly(['categoryId', 'categoryName', 'totalRooms', 'occupiedRooms', 'rate'])
+        && item.categoryId is string && item.categoryId.size() >= 1 && item.categoryId.size() <= 32
+        && item.categoryName is string && item.categoryName.size() >= 1 && item.categoryName.size() <= 80
+        && item.totalRooms is int && item.totalRooms >= 0 && item.totalRooms <= 500
+        && item.occupiedRooms is int && item.occupiedRooms >= 0 && item.occupiedRooms <= 500
+        && item.rate is number && item.rate >= 0 && item.rate <= 10000000;
+    }
+
+    function isValidEodGuestItem(item) {
+      return item is map
+        && item.keys().hasAll([
+          'resCode', 'roomNumber', 'guestName', 'lifecycle',
+          'checkIn', 'checkOut', 'totalAmount', 'paidAmount', 'extraChargesTotal'
+        ])
+        && item.keys().hasOnly([
+          'resCode', 'roomNumber', 'guestName', 'lifecycle',
+          'checkIn', 'checkOut', 'totalAmount', 'paidAmount', 'extraChargesTotal'
+        ])
+        && item.resCode is string && item.resCode.size() >= 1 && item.resCode.size() <= 32
+        && (item.roomNumber == null || (item.roomNumber is string && item.roomNumber.size() >= 1 && item.roomNumber.size() <= 16))
+        && item.guestName is string && item.guestName.size() >= 1 && item.guestName.size() <= 120
+        && item.lifecycle in ['CONFIRMED', 'INHOUSE', 'CHECKED_OUT']
+        && item.checkIn is string && item.checkIn.size() == 10
+        && item.checkOut is string && item.checkOut.size() == 10
+        && item.totalAmount is number && item.totalAmount >= 0 && item.totalAmount <= 100000000
+        && item.paidAmount is number && item.paidAmount >= 0 && item.paidAmount <= 100000000
+        && item.extraChargesTotal is number && item.extraChargesTotal >= 0 && item.extraChargesTotal <= 100000000;
+    }
+
+    function isValidEndOfDayLog(data) {
+      return data.keys().hasAll([
+          'id', 'businessDate', 'nextBusinessDate', 'closedAt', 'closedBy',
+          'totalRooms', 'occupiedRooms', 'occupancyRate', 'availableRooms', 'blockedRooms',
+          'cleanRooms', 'dirtyRooms', 'arrivalsRealized', 'arrivalsPending',
+          'departuresCompleted', 'departuresPending', 'roomRevenue', 'extraChargesRevenue',
+          'collectedPayments', 'pendingBalance', 'adr', 'revPar',
+          'categoryBreakdown', 'guestSnapshots', 'ownerId', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id', 'businessDate', 'nextBusinessDate', 'closedAt', 'closedBy',
+          'totalRooms', 'occupiedRooms', 'occupancyRate', 'availableRooms', 'blockedRooms',
+          'cleanRooms', 'dirtyRooms', 'arrivalsRealized', 'arrivalsPending',
+          'departuresCompleted', 'departuresPending', 'roomRevenue', 'extraChargesRevenue',
+          'collectedPayments', 'pendingBalance', 'adr', 'revPar',
+          'categoryBreakdown', 'guestSnapshots', 'ownerId', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.id)
+        && data.businessDate is string && data.businessDate.size() == 10 && data.businessDate.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && data.nextBusinessDate is string && data.nextBusinessDate.size() == 10 && data.nextBusinessDate.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$')
+        && data.closedAt is string && data.closedAt.size() >= 1 && data.closedAt.size() <= 64
+        && data.closedBy is string && data.closedBy.size() >= 1 && data.closedBy.size() <= 120
+        && data.totalRooms is int && data.totalRooms >= 0 && data.totalRooms <= 500
+        && data.occupiedRooms is int && data.occupiedRooms >= 0 && data.occupiedRooms <= 500
+        && data.occupancyRate is number && data.occupancyRate >= 0 && data.occupancyRate <= 100
+        && data.availableRooms is int && data.availableRooms >= 0 && data.availableRooms <= 500
+        && data.blockedRooms is int && data.blockedRooms >= 0 && data.blockedRooms <= 500
+        && data.cleanRooms is int && data.cleanRooms >= 0 && data.cleanRooms <= 500
+        && data.dirtyRooms is int && data.dirtyRooms >= 0 && data.dirtyRooms <= 500
+        && data.arrivalsRealized is int && data.arrivalsRealized >= 0 && data.arrivalsRealized <= 500
+        && data.arrivalsPending is int && data.arrivalsPending >= 0 && data.arrivalsPending <= 500
+        && data.departuresCompleted is int && data.departuresCompleted >= 0 && data.departuresCompleted <= 500
+        && data.departuresPending is int && data.departuresPending >= 0 && data.departuresPending <= 500
+        && data.roomRevenue is number && data.roomRevenue >= 0 && data.roomRevenue <= 100000000
+        && data.extraChargesRevenue is number && data.extraChargesRevenue >= 0 && data.extraChargesRevenue <= 100000000
+        && data.collectedPayments is number && data.collectedPayments >= 0 && data.collectedPayments <= 100000000
+        && data.pendingBalance is number && data.pendingBalance >= 0 && data.pendingBalance <= 100000000
+        && data.adr is number && data.adr >= 0 && data.adr <= 100000000
+        && data.revPar is number && data.revPar >= 0 && data.revPar <= 100000000
+        && data.categoryBreakdown is list
+        && data.categoryBreakdown.size() <= 20
+        && (data.categoryBreakdown.size() == 0 || isValidEodCategoryItem(data.categoryBreakdown[0]))
+        && data.guestSnapshots is list
+        && data.guestSnapshots.size() <= 100
+        && (data.guestSnapshots.size() == 0 || isValidEodGuestItem(data.guestSnapshots[0]))
+        && data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    // 4. Collection Rules
+    match /admins/{uid} {
+      allow get: if isValidId(uid) && isVerifiedUser() && (request.auth.uid == uid || isBootstrappedAdmin());
+      allow list, create, update, delete: if false;
+    }
+
+    match /reservations/{reservationId} {
+      allow get: if isValidId(reservationId) && isVerifiedUser() && (isOwner(existing()) || isAdmin());
+      allow list: if isVerifiedUser() && (isBootstrappedAdmin() || existing().ownerId == request.auth.uid);
+
+      allow create: if isVerifiedUser()
+        && isValidId(reservationId)
+        && isValidReservation(incoming())
+        && incoming().id == reservationId
+        && incoming().ownerId == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isVerifiedUser()
+        && isValidId(reservationId)
+        && isValidReservation(incoming())
+        && incoming().id == existing().id
+        && incoming().ownerId == existing().ownerId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (isOwner(existing()) || isAdmin())
+        && (
+          // Action 1: SAVE (edit active reservation details)
+          (
+            existing().lifecycle != 'CANCELLED'
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'roomNumber', 'firstName', 'lastName', 'checkIn', 'checkOut',
+              'nights', 'categoryId', 'paymentStatus', 'paidAmount',
+              'totalAmount', 'notes', 'updatedAt'
+            ])
+          )
+          ||
+          // Action 2: CHECK IN (locks active daily exchange rates onto the reservation/room)
+          (
+            existing().lifecycle == 'CONFIRMED'
+            && incoming().lifecycle == 'INHOUSE'
+            && incoming().diff(existing()).affectedKeys().hasOnly(['lifecycle', 'checkedInAt', 'checkInRates', 'updatedAt'])
+          )
+          ||
+          // Action 3: UNDO CHECK IN
+          (
+            existing().lifecycle == 'INHOUSE'
+            && incoming().lifecycle == 'CONFIRMED'
+            && incoming().diff(existing()).affectedKeys().hasOnly(['lifecycle', 'checkedInAt', 'checkInRates', 'updatedAt'])
+          )
+          ||
+          // Action 4: CHECK OUT (requires full payment)
+          (
+            existing().lifecycle == 'INHOUSE'
+            && incoming().lifecycle == 'CHECKED_OUT'
+            && incoming().paymentStatus == 'ODENDI'
+            && incoming().paidAmount >= incoming().totalAmount
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'paidAmount', 'paymentStatus', 'lifecycle', 'checkedOutAt', 'updatedAt'
+            ])
+          )
+          ||
+          // Action 5: UNDO CHECK OUT
+          (
+            existing().lifecycle == 'CHECKED_OUT'
+            && incoming().lifecycle == 'INHOUSE'
+            && incoming().diff(existing()).affectedKeys().hasOnly(['lifecycle', 'checkedOutAt', 'updatedAt'])
+          )
+          ||
+          // Action 6: POST / REMOVE EXTRA FOLIO CHARGES
+          (
+            existing().lifecycle == 'INHOUSE'
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'extraCharges', 'totalAmount', 'paymentStatus', 'updatedAt'
+            ])
+          )
+          ||
+          // Action 7: RECORD / UPDATE INHOUSE CHECK-IN DAY PAYMENT (LOCKED RATE)
+          (
+            existing().lifecycle == 'INHOUSE'
+            && incoming().lifecycle == 'INHOUSE'
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'checkInPayment', 'checkInRates', 'paidAmount', 'paymentStatus', 'updatedAt'
+            ])
+          )
+          ||
+          // Action 8A: EARLY CHECK-OUT — POST UNUSED NIGHTS & SHORTEN STAY (PAID AMOUNT UNCHANGED)
+          (
+            existing().lifecycle == 'INHOUSE'
+            && incoming().lifecycle == 'INHOUSE'
+            && incoming().paidAmount == existing().paidAmount
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'checkOut', 'nights', 'extraCharges', 'totalAmount', 'paymentStatus', 'updatedAt'
+            ])
+          )
+          ||
+          // Action 8B: EARLY CHECK-OUT — POST UNUSED NIGHTS & COMPLETE CHECK-OUT (BALANCE == 0 REQUIRED)
+          (
+            existing().lifecycle == 'INHOUSE'
+            && incoming().lifecycle == 'CHECKED_OUT'
+            && incoming().paymentStatus == 'ODENDI'
+            && incoming().paidAmount >= incoming().totalAmount
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'checkOut', 'nights', 'extraCharges', 'totalAmount', 'paidAmount', 'paymentStatus', 'lifecycle', 'checkedOutAt', 'updatedAt'
+            ])
+          )
+          ||
+          // Action 9: CANCEL ACTIVE RESERVATION WITH CANCELLATION REASON
+          (
+            existing().lifecycle in ['CONFIRMED', 'INHOUSE']
+            && incoming().lifecycle == 'CANCELLED'
+            && incoming().cancellationReason is string
+            && incoming().cancellationReason.size() >= 1
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'lifecycle', 'cancellationReason', 'cancelledAt', 'cancelledBy', 'updatedAt'
+            ])
+          )
+        );
+
+      allow delete: if isValidId(reservationId) && isVerifiedUser() && isAdmin();
+    }
+
+    match /rooms/{roomNumber} {
+      allow get: if isValidId(roomNumber) && isVerifiedUser() && (isOwner(existing()) || isAdmin());
+      allow list: if isVerifiedUser() && (isBootstrappedAdmin() || existing().ownerId == request.auth.uid);
+
+      allow create: if isVerifiedUser()
+        && isValidId(roomNumber)
+        && isValidRoom(incoming())
+        && incoming().roomNumber == roomNumber
+        && incoming().ownerId == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isVerifiedUser()
+        && isValidId(roomNumber)
+        && isValidRoom(incoming())
+        && incoming().roomNumber == existing().roomNumber
+        && incoming().floor == existing().floor
+        && incoming().ownerId == existing().ownerId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (isOwner(existing()) || isAdmin())
+        && (
+          // Action 1: OUT OF ORDER / CLOSED TO SALES / AVAILABLE (SOLVED)
+          incoming().diff(existing()).affectedKeys().hasOnly(['physicalStatus', 'updatedAt'])
+          ||
+          // Action 2: CLEANLINESS / AUTO-DIRTY ON CHECK-OUT
+          incoming().diff(existing()).affectedKeys().hasOnly(['isDirty', 'updatedAt'])
+          ||
+          // Action 3: ROOM LOCK / UNLOCK
+          incoming().diff(existing()).affectedKeys().hasOnly(['isLocked', 'lockedBy', 'lockedAt', 'updatedAt'])
+        );
+
+      allow delete: if false;
+    }
+
+    match /room_requests/{roomNumber} {
+      allow get: if isValidId(roomNumber) && isVerifiedUser() && (isOwner(existing()) || isAdmin());
+      allow list: if isVerifiedUser() && (isBootstrappedAdmin() || existing().ownerId == request.auth.uid);
+
+      allow create: if isVerifiedUser()
+        && isValidId(roomNumber)
+        && isValidRoomRequest(incoming())
+        && incoming().roomNumber == roomNumber
+        && incoming().ownerId == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isVerifiedUser()
+        && isValidId(roomNumber)
+        && isValidRoomRequest(incoming())
+        && incoming().roomNumber == existing().roomNumber
+        && incoming().ownerId == existing().ownerId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (isOwner(existing()) || isAdmin())
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'teknik', 'hk', 'resepsiyon', 'updatedAt'
+        ]);
+
+      allow delete: if isValidId(roomNumber) && isVerifiedUser() && (isOwner(existing()) || isAdmin());
+    }
+
+    match /pms_settings/{settingId} {
+      allow get: if isValidId(settingId) && isVerifiedUser() && (resource == null || isAdmin() || isOwner(existing()));
+      allow list: if isVerifiedUser() && (isBootstrappedAdmin() || existing().ownerId == request.auth.uid);
+
+      allow create: if isVerifiedUser()
+        && isValidId(settingId)
+        && isValidPmsSettings(incoming())
+        && incoming().id == settingId
+        && incoming().ownerId == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isVerifiedUser()
+        && isValidId(settingId)
+        && isValidPmsSettings(incoming())
+        && incoming().id == existing().id
+        && incoming().ownerId == existing().ownerId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (isOwner(existing()) || isAdmin())
+        && (
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'activeBusinessDate', 'lastClosedDate', 'rollback20261113Done',
+            'exchangeRates', 'activeRateType', 'tcmbRates',
+            'ratesDate', 'ratesBulletinDate', 'ratesSource', 'ratesUpdatedAt',
+            'updatedAt'
+          ])
+        );
+
+      allow delete: if false;
+    }
+
+    match /end_of_day_logs/{reportId} {
+      allow get: if isValidId(reportId) && isVerifiedUser() && (isOwner(existing()) || isAdmin());
+      allow list: if isVerifiedUser() && (isBootstrappedAdmin() || existing().ownerId == request.auth.uid);
+
+      allow create: if isVerifiedUser()
+        && isValidId(reportId)
+        && isValidEndOfDayLog(incoming())
+        && incoming().id == reportId
+        && incoming().ownerId == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if false;
+      allow delete: if isValidId(reportId) && isVerifiedUser() && (isOwner(existing()) || isAdmin());
+    }
+  }
+}

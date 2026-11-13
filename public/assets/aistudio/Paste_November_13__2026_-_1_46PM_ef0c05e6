@@ -1,0 +1,1311 @@
+"use client";
+
+import React, { useState, useMemo } from "react";
+import {
+  Search,
+  ArrowUpDown,
+  ArrowUp,
+  ArrowDown,
+  Eye,
+  Pencil,
+  Printer,
+  Plus,
+  Layers,
+  X,
+  CalendarPlus,
+  Check,
+  LogIn,
+  LogOut,
+  Calendar,
+  BedDouble,
+  Grid,
+  StickyNote,
+  CheckCircle2,
+  Clock,
+  Undo2,
+  AlertCircle,
+  AlertTriangle,
+  Sparkles,
+  FileText,
+  Wrench,
+  MessageSquare,
+  Trash2,
+  Save,
+  Filter,
+  Ban,
+  ShieldCheck,
+} from "lucide-react";
+
+// ============================================================================
+// 1. VERİ MODELLERİ VE TİPLER
+// ============================================================================
+type MainModule = "RESERVATION" | "ARRIVALS" | "INHOUSE_RACK" | "DUE_OUTS";
+type SortField = "resCode" | "roomNumber" | "guestName" | "checkIn" | "category" | "paidAmount";
+type SortDirection = "asc" | "desc";
+type PaymentStatus = "ODENDI" | "KISMI_ODENDI" | "ODENMEDI";
+type ResLifecycle = "CONFIRMED" | "INHOUSE" | "CHECKED_OUT";
+type RoomPhysicalStatus = "AVAILABLE" | "OUT_OF_ORDER" | "CLOSED_TO_SALES";
+type RackDisplayStatus = "INHOUSE" | "BOS" | "DUE_OUT" | "OUT_OF_ORDER" | "CLOSED_TO_SALES";
+
+export interface RoomCategory {
+  id: string;
+  name: string;
+  defaultRate: number;
+}
+
+export interface RoomRequests {
+  teknik: string;
+  hk: string;
+  resepsiyon: string;
+}
+
+export interface HotelRoom {
+  roomNumber: string;
+  floor: number;
+  categoryId: string;
+  physicalStatus: RoomPhysicalStatus;
+  isDirty?: boolean;
+}
+
+export interface Reservation {
+  id: string;
+  groupId?: string;
+  resCode: string;
+  roomNumber: string | null;
+  firstName: string;
+  lastName: string;
+  checkIn: string; // YYYY-MM-DD
+  checkOut: string; // YYYY-MM-DD
+  nights: number;
+  categoryId: string;
+  paymentStatus: PaymentStatus;
+  paidAmount: number;
+  totalAmount: number;
+  notes: string;
+  lifecycle: ResLifecycle;
+  checkedInAt?: string;
+  checkedOutAt?: string;
+}
+
+export interface ConflictPopupData {
+  title: string;
+  message: string;
+  detailLine?: string;
+}
+
+// ============================================================================
+// 2. SABİT TANIMLAR: 8 ODA KATEGORİSİ VE 4 KAT x 5 ODA (20 ODA)
+// ============================================================================
+const INITIAL_CATEGORIES: RoomCategory[] = [
+  { id: "CAT-1", name: "Sea View Deluxe King", defaultRate: 4500 },
+  { id: "CAT-2", name: "City View Deluxe King", defaultRate: 4000 },
+  { id: "CAT-3", name: "Sea View King", defaultRate: 3800 },
+  { id: "CAT-4", name: "City View King", defaultRate: 3400 },
+  { id: "CAT-5", name: "Sea View Deluxe Twin", defaultRate: 4300 },
+  { id: "CAT-6", name: "City View Deluxe Twin", defaultRate: 3800 },
+  { id: "CAT-7", name: "Sea View Twin", defaultRate: 3600 },
+  { id: "CAT-8", name: "City View Twin", defaultRate: 3200 },
+];
+
+const INITIAL_ROOMS: HotelRoom[] = [
+  // 1. Kat
+  { roomNumber: "4101", floor: 1, categoryId: "CAT-1", physicalStatus: "AVAILABLE" },
+  { roomNumber: "4102", floor: 1, categoryId: "CAT-4", physicalStatus: "AVAILABLE", isDirty: true },
+  { roomNumber: "4103", floor: 1, categoryId: "CAT-8", physicalStatus: "AVAILABLE" },
+  { roomNumber: "4104", floor: 1, categoryId: "CAT-2", physicalStatus: "AVAILABLE" },
+  { roomNumber: "4105", floor: 1, categoryId: "CAT-8", physicalStatus: "OUT_OF_ORDER" },
+  // 2. Kat
+  { roomNumber: "4201", floor: 2, categoryId: "CAT-2", physicalStatus: "AVAILABLE" },
+  { roomNumber: "4202", floor: 2, categoryId: "CAT-4", physicalStatus: "AVAILABLE" },
+  { roomNumber: "4203", floor: 2, categoryId: "CAT-6", physicalStatus: "AVAILABLE" },
+  { roomNumber: "4204", floor: 2, categoryId: "CAT-6", physicalStatus: "CLOSED_TO_SALES" },
+  { roomNumber: "4205", floor: 2, categoryId: "CAT-7", physicalStatus: "AVAILABLE" },
+  // 3. Kat
+  { roomNumber: "4301", floor: 3, categoryId: "CAT-3", physicalStatus: "AVAILABLE" },
+  { roomNumber: "4302", floor: 3, categoryId: "CAT-3", physicalStatus: "AVAILABLE" },
+  { roomNumber: "4303", floor: 3, categoryId: "CAT-5", physicalStatus: "AVAILABLE" },
+  { roomNumber: "4304", floor: 3, categoryId: "CAT-4", physicalStatus: "AVAILABLE" },
+  { roomNumber: "4305", floor: 3, categoryId: "CAT-7", physicalStatus: "AVAILABLE" },
+  // 4. Kat
+  { roomNumber: "4401", floor: 4, categoryId: "CAT-1", physicalStatus: "OUT_OF_ORDER" },
+  { roomNumber: "4402", floor: 4, categoryId: "CAT-1", physicalStatus: "AVAILABLE" },
+  { roomNumber: "4403", floor: 4, categoryId: "CAT-1", physicalStatus: "AVAILABLE" },
+  { roomNumber: "4404", floor: 4, categoryId: "CAT-5", physicalStatus: "AVAILABLE" },
+  { roomNumber: "4405", floor: 4, categoryId: "CAT-1", physicalStatus: "AVAILABLE" },
+];
+
+const RACK_STATUS_STYLES: Record<
+  RackDisplayStatus,
+  { label: string; cardBg: string; cardBorder: string; badgeBg: string; badgeText: string }
+> = {
+  INHOUSE: { label: "INHOUSE", cardBg: "bg-sky-100/95", cardBorder: "border-sky-300", badgeBg: "bg-sky-200", badgeText: "text-sky-900" },
+  BOS: { label: "BOŞ", cardBg: "bg-emerald-100/95", cardBorder: "border-emerald-300", badgeBg: "bg-emerald-600", badgeText: "text-white" },
+  DUE_OUT: { label: "DUE OUT", cardBg: "bg-amber-100/95", cardBorder: "border-amber-300", badgeBg: "bg-amber-400", badgeText: "text-amber-950" },
+  OUT_OF_ORDER: { label: "OUT OF ORDER", cardBg: "bg-slate-200/95", cardBorder: "border-slate-400", badgeBg: "bg-slate-600", badgeText: "text-white" },
+  CLOSED_TO_SALES: { label: "CLOSED TO SALES", cardBg: "bg-rose-100/95", cardBorder: "border-rose-300", badgeBg: "bg-rose-400", badgeText: "text-rose-950" },
+};
+
+// ============================================================================
+// 3. YARDIMCI FONKSİYONLAR VE TARİH ÇAKIŞMA MOTORU
+// ============================================================================
+function getSystemTodayISO(): string {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, "0");
+  const d = String(now.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+function addDaysISO(isoDate: string, days: number): string {
+  const dt = new Date(isoDate);
+  dt.setDate(dt.getDate() + days);
+  const y = dt.getFullYear();
+  const m = String(dt.getMonth() + 1).padStart(2, "0");
+  const d = String(dt.getDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+function formatTrDate(isoDate: string): string {
+  if (!isoDate) return "";
+  const months = ["Oca", "Şub", "Mar", "Nis", "May", "Haz", "Tem", "Ağu", "Eyl", "Eki", "Kas", "Ara"];
+  const [y, m, d] = isoDate.split("-");
+  return `${Number(d)} ${months[Number(m) - 1]} ${y}`;
+}
+
+function calculateNights(checkIn: string, checkOut: string): number {
+  if (!checkIn || !checkOut) return 1;
+  const start = new Date(checkIn).getTime();
+  const end = new Date(checkOut).getTime();
+  const diff = Math.round((end - start) / (1000 * 60 * 60 * 24));
+  return diff > 0 ? diff : 1;
+}
+
+// İki konaklama aralığının tarih çakışması kontrolü (Aynı gün çıkış-giriş devrine izin verir)
+function isDateRangeOverlapping(
+  startA: string,
+  endA: string,
+  startB: string,
+  endB: string
+): boolean {
+  return startA < endB && endA > startB;
+}
+
+// ============================================================================
+// 4. ORTAK REZERVASYON KARTI (RESERVATION & ARRIVALS İÇİN BİREBİR AYNI)
+// ============================================================================
+interface ReservationCardModalProps {
+  isOpen: boolean;
+  mode: "CREATE" | "EDIT";
+  initialData?: Reservation | null;
+  categories: RoomCategory[];
+  onUpdateCategories: (updated: RoomCategory[]) => void;
+  defaultCheckInDate: string;
+  onClose: () => void;
+  onSave: (savedRow: Reservation, isNew: boolean) => boolean; // Çakışma varsa false döner ve kart açık kalır
+}
+
+function ReservationCardModal({
+  isOpen,
+  mode,
+  initialData,
+  categories,
+  onUpdateCategories,
+  defaultCheckInDate,
+  onClose,
+  onSave,
+}: ReservationCardModalProps) {
+  const [firstName, setFirstName] = useState(initialData?.firstName || "");
+  const [lastName, setLastName] = useState(initialData?.lastName || "");
+  const [roomNumber, setRoomNumber] = useState(initialData?.roomNumber || "");
+  const [checkInDate, setCheckInDate] = useState(initialData?.checkIn || defaultCheckInDate);
+  const [checkOutDate, setCheckOutDate] = useState(
+    initialData?.checkOut || addDaysISO(defaultCheckInDate, 2)
+  );
+  const [selectedCategoryId, setSelectedCategoryId] = useState(
+    initialData?.categoryId || categories[0].id
+  );
+  const [totalPrice, setTotalPrice] = useState<number>(
+    initialData?.totalAmount ?? categories[0].defaultRate * 2
+  );
+  const [paidAmount, setPaidAmount] = useState<number>(initialData?.paidAmount ?? 0);
+  const [notes, setNotes] = useState<string>(initialData?.notes || "");
+
+  const [isEditingCats, setIsEditingCats] = useState(false);
+  const [draftCats, setDraftCats] = useState<RoomCategory[]>(categories);
+
+  if (!isOpen) return null;
+
+  const nights = calculateNights(checkInDate, checkOutDate);
+  const remainingPayment = Math.max(0, totalPrice - paidAmount);
+
+  const handleDateOrCatChange = (newIn: string, newOut: string, newCatId: string) => {
+    setCheckInDate(newIn);
+    setCheckOutDate(newOut);
+    setSelectedCategoryId(newCatId);
+
+    const n = calculateNights(newIn, newOut);
+    const cat = categories.find((c) => c.id === newCatId) || categories[0];
+    setTotalPrice(cat.defaultRate * n);
+  };
+
+  const handleSaveCats = () => {
+    const cleaned = draftCats.map((d, idx) => ({
+      ...d,
+      name: d.name.trim() || categories[idx].name,
+    }));
+    onUpdateCategories(cleaned);
+    setIsEditingCats(false);
+  };
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!firstName.trim() || !lastName.trim()) return;
+
+    let status: PaymentStatus = "ODENMEDI";
+    if (paidAmount >= totalPrice && totalPrice > 0) status = "ODENDI";
+    else if (paidAmount > 0 && paidAmount < totalPrice) status = "KISMI_ODENDI";
+
+    const rowPayload: Reservation = {
+      id: initialData?.id || `RES-${Date.now()}`,
+      groupId: initialData?.groupId,
+      resCode: initialData?.resCode || `SF-${Math.floor(1000 + Math.random() * 9000)}`,
+      roomNumber: roomNumber.trim() ? roomNumber.trim() : null,
+      firstName: firstName.trim().toLocaleUpperCase("tr-TR"),
+      lastName: lastName.trim().toLocaleUpperCase("tr-TR"),
+      checkIn: checkInDate,
+      checkOut: checkOutDate,
+      nights,
+      categoryId: selectedCategoryId,
+      paymentStatus: status,
+      paidAmount,
+      totalAmount: totalPrice,
+      notes,
+      lifecycle: initialData?.lifecycle || "CONFIRMED",
+      checkedInAt: initialData?.checkedInAt,
+      checkedOutAt: initialData?.checkedOutAt,
+    };
+
+    onSave(rowPayload, mode === "CREATE");
+  };
+
+  return (
+    <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center z-40 p-4">
+      <div className="bg-white rounded-lg shadow-2xl border border-slate-300 w-full max-w-lg overflow-hidden">
+        <div className="flex items-center justify-between px-4 py-3 bg-slate-900 text-white">
+          <div className="flex items-center gap-2">
+            <CalendarPlus className="w-4 h-4 text-sky-400" />
+            <h2 className="font-bold text-sm tracking-wide">
+              {mode === "CREATE"
+                ? "YENİ REZERVASYON KARTI"
+                : `REZERVASYON KARTI — ${initialData?.resCode}`}
+            </h2>
+          </div>
+          <button type="button" onClick={onClose} className="text-slate-400 hover:text-white cursor-pointer">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="p-4 flex flex-col gap-3 text-xs">
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="font-bold text-slate-700 block mb-1">Ad *</label>
+              <input
+                type="text"
+                required
+                autoFocus
+                value={firstName}
+                onChange={(e) => setFirstName(e.target.value)}
+                placeholder="Örn: Ahmet"
+                className="w-full border border-slate-300 rounded px-2.5 py-1.5 text-sm font-medium focus:outline-none focus:border-sky-600"
+              />
+            </div>
+            <div>
+              <label className="font-bold text-slate-700 block mb-1">Soyad *</label>
+              <input
+                type="text"
+                required
+                value={lastName}
+                onChange={(e) => setLastName(e.target.value)}
+                placeholder="Örn: Yılmaz"
+                className="w-full border border-slate-300 rounded px-2.5 py-1.5 text-sm font-medium focus:outline-none focus:border-sky-600"
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-3 gap-3">
+            <div>
+              <label className="font-bold text-slate-700 block mb-1">Oda No</label>
+              <input
+                type="text"
+                value={roomNumber}
+                onChange={(e) => setRoomNumber(e.target.value)}
+                placeholder="Boş / 4101"
+                className="w-full border border-slate-300 rounded px-2.5 py-1.5 text-xs font-bold bg-white focus:outline-none focus:border-sky-600"
+              />
+            </div>
+
+            <div className="col-span-2">
+              <div className="flex items-center justify-between mb-1">
+                <label className="font-bold text-slate-700">Oda Tipi *</label>
+                {!isEditingCats ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDraftCats(categories.map((c) => ({ ...c })));
+                      setIsEditingCats(true);
+                    }}
+                    className="flex items-center gap-1 px-1.5 py-0.2 rounded bg-slate-100 hover:bg-slate-200 border border-slate-300 text-[10px] font-bold text-slate-700 cursor-pointer"
+                  >
+                    <Pencil className="w-2.5 h-2.5" />
+                    EDIT
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={handleSaveCats}
+                    className="flex items-center gap-1 px-2 py-0.2 rounded bg-emerald-600 hover:bg-emerald-700 text-[10px] font-extrabold text-white cursor-pointer"
+                  >
+                    <Check className="w-2.5 h-2.5" />
+                    SAVE
+                  </button>
+                )}
+              </div>
+
+              {!isEditingCats ? (
+                <select
+                  value={selectedCategoryId}
+                  onChange={(e) => handleDateOrCatChange(checkInDate, checkOutDate, e.target.value)}
+                  className="w-full border border-slate-300 rounded px-2.5 py-1.5 text-xs font-semibold bg-white focus:outline-none focus:border-sky-600"
+                >
+                  {categories.map((cat) => (
+                    <option key={cat.id} value={cat.id}>
+                      {cat.name}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <div className="p-2 bg-amber-50 border border-amber-300 rounded flex flex-col gap-1 max-h-36 overflow-y-auto">
+                  {draftCats.map((cat, idx) => (
+                    <div key={cat.id} className="flex items-center gap-1">
+                      <span className="text-[10px] font-bold text-slate-500 w-3">{idx + 1}.</span>
+                      <input
+                        type="text"
+                        value={cat.name}
+                        onChange={(e) =>
+                          setDraftCats((prev) =>
+                            prev.map((c) => (c.id === cat.id ? { ...c, name: e.target.value } : c))
+                          )
+                        }
+                        className="w-full px-1.5 py-0.5 text-xs font-semibold bg-white border border-slate-300 rounded"
+                      />
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="font-bold text-slate-700 block mb-1">Giriş Tarihi *</label>
+              <input
+                type="date"
+                required
+                value={checkInDate}
+                onChange={(e) =>
+                  handleDateOrCatChange(e.target.value, checkOutDate, selectedCategoryId)
+                }
+                className="w-full border border-slate-300 rounded px-2.5 py-1.5 text-xs font-medium bg-white"
+              />
+            </div>
+            <div>
+              <label className="font-bold text-slate-700 block mb-1">
+                Çıkış Tarihi * <span className="text-sky-700">({nights} Gece)</span>
+              </label>
+              <input
+                type="date"
+                required
+                min={checkInDate}
+                value={checkOutDate}
+                onChange={(e) =>
+                  handleDateOrCatChange(checkInDate, e.target.value, selectedCategoryId)
+                }
+                className="w-full border border-slate-300 rounded px-2.5 py-1.5 text-xs font-medium bg-white"
+              />
+            </div>
+          </div>
+
+          <div className="p-2.5 rounded-md bg-slate-50 border border-slate-200 flex flex-col gap-2">
+            <div className="grid grid-cols-3 gap-2">
+              <div>
+                <label className="font-bold text-slate-600 block mb-1">Total Ödeme (TL)</label>
+                <input
+                  type="number"
+                  min={0}
+                  value={totalPrice}
+                  onChange={(e) => setTotalPrice(Math.max(0, Number(e.target.value)))}
+                  className="w-full border border-slate-300 rounded px-2 py-1 font-bold text-xs bg-white"
+                />
+              </div>
+
+              <div>
+                <label className="font-bold text-slate-700 block mb-1">Yapılan Ödeme</label>
+                <input
+                  type="number"
+                  min={0}
+                  max={totalPrice}
+                  value={paidAmount}
+                  onChange={(e) => setPaidAmount(Math.max(0, Number(e.target.value)))}
+                  className="w-full border border-emerald-400 rounded px-2 py-1 font-bold text-xs bg-white text-emerald-900"
+                />
+              </div>
+
+              <div>
+                <label className="font-bold text-slate-600 block mb-1">Kalan Ödeme</label>
+                <div
+                  className={`w-full px-2 py-1 rounded border font-extrabold text-xs ${
+                    remainingPayment > 0
+                      ? "bg-amber-50 border-amber-300 text-amber-800"
+                      : "bg-emerald-50 border-emerald-300 text-emerald-800"
+                  }`}
+                >
+                  {remainingPayment.toLocaleString("tr-TR")} TL
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <label className="font-bold text-slate-700 flex items-center gap-1 mb-1">
+              <StickyNote className="w-3.5 h-3.5 text-slate-500" />
+              Notlar / Serbest Not
+            </label>
+            <textarea
+              rows={3}
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              placeholder="Misafir notları, özel istekler, geliş saati..."
+              className="w-full border border-slate-300 rounded px-2.5 py-1.5 text-xs bg-slate-50/60 focus:bg-white focus:outline-none focus:border-sky-600 resize-y"
+            />
+          </div>
+
+          <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-200">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-4 py-2 rounded border border-slate-300 bg-white hover:bg-slate-100 text-slate-700 font-bold tracking-wide cursor-pointer"
+            >
+              KAPAT
+            </button>
+            <button
+              type="submit"
+              className="px-5 py-2 rounded bg-emerald-600 hover:bg-emerald-700 text-white font-extrabold tracking-wide shadow-xs cursor-pointer"
+            >
+              SAVE
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// 5. ANA UYGULAMA: STAYFLOW PMS (ÇAKIŞMA KORUMASI + POP-UP HATA PENCERESİ)
+// ============================================================================
+export default function StayFlowPmsApp() {
+  const systemToday = useMemo(() => getSystemTodayISO(), []);
+  const yesterday = useMemo(() => addDaysISO(systemToday, -2), [systemToday]);
+  const tomorrow = useMemo(() => addDaysISO(systemToday, 1), [systemToday]);
+  const next3Days = useMemo(() => addDaysISO(systemToday, 3), [systemToday]);
+
+  const [activeModule, setActiveModule] = useState<MainModule>("ARRIVALS");
+  const [categories, setCategories] = useState<RoomCategory[]>(INITIAL_CATEGORIES);
+  const [rooms, setRooms] = useState<HotelRoom[]>(INITIAL_ROOMS);
+  const [showExtraModules, setShowExtraModules] = useState(false);
+
+  // MERKEZİ POP-UP HATA PENCERESİ STATE'İ (ÇAKIŞMA VE CHECK-IN ENGELLERİ İÇİN)
+  const [conflictPopup, setConflictPopup] = useState<ConflictPopupData | null>(null);
+
+  // MERKEZİ REZERVASYON VERİTABANI
+  const [reservations, setReservations] = useState<Reservation[]>([
+    // --- BUGÜN GİRİŞ YAPACAKLAR (ARRIVALS) ---
+    {
+      id: "R-101",
+      resCode: "SF-8192",
+      roomNumber: "4101",
+      firstName: "AHMET",
+      lastName: "YILMAZ",
+      checkIn: systemToday,
+      checkOut: next3Days,
+      nights: 3,
+      categoryId: "CAT-1",
+      paymentStatus: "ODENDI",
+      paidAmount: 13500,
+      totalAmount: 13500,
+      notes: "Yüksek kat ve sessiz oda talep edildi.",
+      lifecycle: "CONFIRMED",
+    },
+    {
+      id: "R-102",
+      resCode: "SF-8193",
+      roomNumber: null,
+      firstName: "MELİS",
+      lastName: "ŞEN",
+      checkIn: systemToday,
+      checkOut: addDaysISO(systemToday, 2),
+      nights: 2,
+      categoryId: "CAT-4",
+      paymentStatus: "KISMI_ODENDI",
+      paidAmount: 3400,
+      totalAmount: 6800,
+      notes: "14:30 gibi giriş yapacak.",
+      lifecycle: "CONFIRMED",
+    },
+    {
+      id: "R-103",
+      groupId: "GRP-KAYA",
+      resCode: "SF-3104",
+      roomNumber: "4201",
+      firstName: "SELİN",
+      lastName: "KAYA",
+      checkIn: systemToday,
+      checkOut: next3Days,
+      nights: 3,
+      categoryId: "CAT-2",
+      paymentStatus: "ODENDI",
+      paidAmount: 12000,
+      totalAmount: 12000,
+      notes: "Çoklu oda rezervasyonu (1/2)",
+      lifecycle: "CONFIRMED",
+    },
+    {
+      id: "R-104",
+      groupId: "GRP-KAYA",
+      resCode: "SF-3105",
+      roomNumber: "4203",
+      firstName: "SELİN",
+      lastName: "KAYA",
+      checkIn: systemToday,
+      checkOut: next3Days,
+      nights: 3,
+      categoryId: "CAT-6",
+      paymentStatus: "ODENMEDI",
+      paidAmount: 0,
+      totalAmount: 11400,
+      notes: "Çoklu oda rezervasyonu (2/2)",
+      lifecycle: "CONFIRMED",
+    },
+    // Çakışma testi için: Oda 4104'te CAN DEMİR aktif INHOUSE iken aynı odaya atanmış örnek ARRIVAL
+    {
+      id: "R-105",
+      resCode: "SF-8199",
+      roomNumber: "4104",
+      firstName: "BARIŞ",
+      lastName: "ARSLAN",
+      checkIn: systemToday,
+      checkOut: addDaysISO(systemToday, 2),
+      nights: 2,
+      categoryId: "CAT-2",
+      paymentStatus: "ODENDI",
+      paidAmount: 8000,
+      totalAmount: 8000,
+      notes: "Çakışma testi kaydı",
+      lifecycle: "CONFIRMED",
+    },
+
+    // --- HALİHAZIRDA KONAKLAYANLAR (INHOUSE) ---
+    {
+      id: "R-201",
+      resCode: "SF-7710",
+      roomNumber: "4104",
+      firstName: "CAN",
+      lastName: "DEMİR",
+      checkIn: yesterday,
+      checkOut: tomorrow,
+      nights: 3,
+      categoryId: "CAT-2",
+      paymentStatus: "ODENDI",
+      paidAmount: 12000,
+      totalAmount: 12000,
+      notes: "",
+      lifecycle: "INHOUSE",
+      checkedInAt: "14:10",
+    },
+    {
+      id: "R-202",
+      resCode: "SF-7712",
+      roomNumber: "4301",
+      firstName: "ELİF",
+      lastName: "ŞEN",
+      checkIn: systemToday,
+      checkOut: next3Days,
+      nights: 3,
+      categoryId: "CAT-3",
+      paymentStatus: "ODENDI",
+      paidAmount: 11400,
+      totalAmount: 11400,
+      notes: "Erken giriş yapıldı.",
+      lifecycle: "INHOUSE",
+      checkedInAt: "10:15",
+    },
+    {
+      id: "R-203",
+      resCode: "SF-7715",
+      roomNumber: "4402",
+      firstName: "HAKAN",
+      lastName: "ACAR",
+      checkIn: yesterday,
+      checkOut: tomorrow,
+      nights: 3,
+      categoryId: "CAT-1",
+      paymentStatus: "ODENDI",
+      paidAmount: 13500,
+      totalAmount: 13500,
+      notes: "",
+      lifecycle: "INHOUSE",
+      checkedInAt: "15:20",
+    },
+
+    // --- BUGÜN ÇIKIŞ YAPACAKLAR (DUE OUTS) ---
+    {
+      id: "R-301",
+      resCode: "SF-6501",
+      roomNumber: "4103",
+      firstName: "MELİSA",
+      lastName: "KAYA",
+      checkIn: yesterday,
+      checkOut: systemToday,
+      nights: 2,
+      categoryId: "CAT-8",
+      paymentStatus: "ODENDI",
+      paidAmount: 6400,
+      totalAmount: 6400,
+      notes: "",
+      lifecycle: "INHOUSE",
+      checkedInAt: "13:00",
+    },
+    {
+      id: "R-302",
+      resCode: "SF-6502",
+      roomNumber: "4205",
+      firstName: "ÖMER",
+      lastName: "AVCI",
+      checkIn: yesterday,
+      checkOut: systemToday,
+      nights: 2,
+      categoryId: "CAT-7",
+      paymentStatus: "KISMI_ODENDI",
+      paidAmount: 6000,
+      totalAmount: 7200,
+      notes: "Kalan 1.200 TL çıkışta tahsil edilecek.",
+      lifecycle: "INHOUSE",
+      checkedInAt: "14:40",
+    },
+    {
+      id: "R-303",
+      resCode: "SF-6503",
+      roomNumber: "4304",
+      firstName: "DERYA",
+      lastName: "KARA",
+      checkIn: yesterday,
+      checkOut: systemToday,
+      nights: 2,
+      categoryId: "CAT-4",
+      paymentStatus: "ODENDI",
+      paidAmount: 6800,
+      totalAmount: 6800,
+      notes: "",
+      lifecycle: "INHOUSE",
+      checkedInAt: "12:15",
+    },
+    {
+      id: "R-304",
+      resCode: "SF-6504",
+      roomNumber: "4405",
+      firstName: "UFUK",
+      lastName: "ÖZKAN",
+      checkIn: yesterday,
+      checkOut: systemToday,
+      nights: 2,
+      categoryId: "CAT-1",
+      paymentStatus: "KISMI_ODENDI",
+      paidAmount: 8550,
+      totalAmount: 9000,
+      notes: "Kalan 450 TL tahsil edilecek.",
+      lifecycle: "INHOUSE",
+      checkedInAt: "16:05",
+    },
+
+    // --- BUGÜN ÇIKIŞI TAMAMLANANLAR (CHECKED OUT) ---
+    {
+      id: "R-401",
+      resCode: "SF-6490",
+      roomNumber: "4102",
+      firstName: "BURAK",
+      lastName: "ÖZKAN",
+      checkIn: yesterday,
+      checkOut: systemToday,
+      nights: 2,
+      categoryId: "CAT-4",
+      paymentStatus: "ODENDI",
+      paidAmount: 6800,
+      totalAmount: 6800,
+      notes: "",
+      lifecycle: "CHECKED_OUT",
+      checkedOutAt: "09:45",
+    },
+  ]);
+
+  const [dueOutPaymentInputs, setDueOutPaymentInputs] = useState<Record<string, string>>({});
+  const [roomRequests, setRoomRequests] = useState<Record<string, RoomRequests>>({
+    "4104": {
+      teknik: "Banyo bataryası sızdırıyor, kontrol edilmeli.",
+      hk: "Odaya ekstra yastık bırakılacak.",
+      resepsiyon: "",
+    },
+    "4301": {
+      teknik: "",
+      hk: "",
+      resepsiyon: "Sabah 07:30 uyandırma servisi istedi.",
+    },
+  });
+
+  const [resModal, setResModal] = useState<{
+    isOpen: boolean;
+    mode: "CREATE" | "EDIT";
+    target: Reservation | null;
+  }>({ isOpen: false, mode: "CREATE", target: null });
+
+  const [rackModalRoomNumber, setRackModalRoomNumber] = useState<string | null>(null);
+  const [draftTeknik, setDraftTeknik] = useState("");
+  const [draftHk, setDraftHk] = useState("");
+  const [draftResepsiyon, setDraftResepsiyon] = useState("");
+
+  const [searchQuery, setSearchQuery] = useState("");
+  const [dateFilter, setDateFilter] = useState("ALL");
+  const [paymentFilter, setPaymentFilter] = useState<"ALL" | PaymentStatus>("ALL");
+  const [onlyMultiRoom, setOnlyMultiRoom] = useState(false);
+  const [sortField, setSortField] = useState<SortField>("checkIn");
+  const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
+  const [rackFilter, setRackFilter] = useState<RackDisplayStatus | "ALL">("ALL");
+
+  const getCategoryName = (catId: string) =>
+    categories.find((c) => c.id === catId)?.name || "Tanımsız";
+
+  // ==========================================================================
+  // ÇAKIŞMA KORUMASI VE İŞ KURALLARI (BUSINESS LOGIC)
+  // ==========================================================================
+
+  // KURAL 1: RESERVATION / ARRIVALS KAYIT & DÜZENLEME TARİH ÇAKIŞMASI KONTROLÜ
+  const handleSaveReservation = (saved: Reservation, isNew: boolean): boolean => {
+    if (saved.roomNumber) {
+      // 1A. Tanımlı bir oda numarası mı?
+      const roomObj = rooms.find((rm) => rm.roomNumber === saved.roomNumber);
+      if (!roomObj) {
+        setConflictPopup({
+          title: "GEÇERSİZ ODA NUMARASI",
+          message: `"${saved.roomNumber}" numaralı oda otel envanterinde (4101–4405) bulunamadı.`,
+          detailLine: "Lütfen geçerli bir oda numarası girin veya oda atamasını boş bırakın.",
+        });
+        return false;
+      }
+
+      // 1B. Aynı odada aktif INHOUSE konaklama veya başka bir CONFIRMED rezervasyon ile tarih çakışması var mı?
+      const conflictingRes = reservations.find(
+        (existing) =>
+          existing.id !== saved.id &&
+          existing.roomNumber === saved.roomNumber &&
+          existing.lifecycle !== "CHECKED_OUT" &&
+          isDateRangeOverlapping(
+            saved.checkIn,
+            saved.checkOut,
+            existing.checkIn,
+            existing.checkOut
+          )
+      );
+
+      if (conflictingRes) {
+        const statusLabel =
+          conflictingRes.lifecycle === "INHOUSE"
+            ? "INHOUSE (Şu An Konaklıyor)"
+            : "CONFIRMED (Onaylı Rezervasyon)";
+
+        setConflictPopup({
+          title: "TARİH VE ODA ÇAKIŞMASI ENGELLENDİ",
+          message: `Oda ${saved.roomNumber} seçilen tarih aralığında (${formatTrDate(saved.checkIn)} → ${formatTrDate(saved.checkOut)}) başka bir kayıtla çakışıyor. Değişiklik kaydedilmedi.`,
+          detailLine: `Çakışan Kayıt: ${conflictingRes.resCode} • ${conflictingRes.firstName} ${conflictingRes.lastName} (${formatTrDate(conflictingRes.checkIn)} → ${formatTrDate(conflictingRes.checkOut)}) [${statusLabel}]`,
+        });
+        return false;
+      }
+    }
+
+    // Çakışma yoksa kaydet ve kartı kapat
+    if (isNew) setReservations((prev) => [saved, ...prev]);
+    else setReservations((prev) => prev.map((r) => (r.id === saved.id ? saved : r)));
+    setResModal({ isOpen: false, mode: "CREATE", target: null });
+    return true;
+  };
+
+  // KURAL 2: ARRIVALS -> INHOUSE MODÜLÜNDE AKTİF OLAN BİR ODAYA CHECK-IN YAPMAYI ENGELLEME
+  const handleCheckIn = (res: Reservation) => {
+    // 2A. Oda atanmamışsa kartı aç
+    if (!res.roomNumber) {
+      setConflictPopup({
+        title: "ODA NUMARASI ATANMAMIŞ",
+        message: `${res.firstName} ${res.lastName} için henüz oda numarası atanmamış. Check-In öncesinde Rezervasyon Kartından oda seçmelisiniz.`,
+      });
+      setResModal({ isOpen: true, mode: "EDIT", target: res });
+      return;
+    }
+
+    const roomObj = rooms.find((rm) => rm.roomNumber === res.roomNumber);
+    if (!roomObj) {
+      setConflictPopup({
+        title: "GEÇERSİZ ODA NUMARASI",
+        message: `${res.roomNumber} numaralı oda otel tanımlı odalar (4101-4405) arasında bulunamadı.`,
+      });
+      return;
+    }
+
+    // 2B. Oda OUT OF ORDER veya CLOSED TO SALES ise engelle
+    if (roomObj.physicalStatus !== "AVAILABLE") {
+      setConflictPopup({
+        title: "ODA GİRİŞE KAPALI",
+        message: `Oda ${res.roomNumber} şu anda "${roomObj.physicalStatus === "OUT_OF_ORDER" ? "OUT OF ORDER (Arızalı)" : "CLOSED TO SALES (Satışa Kapalı)"}" durumunda olduğu için Check-In yapılamaz.`,
+        detailLine: "Önce INHOUSE / RACK ekranından odayı SOLVED durumuna getirin veya başka bir oda atayın.",
+      });
+      return;
+    }
+
+    // 2C. INHOUSE modülünde bu odada halihazırda aktif konaklayan (henüz Check-Out olmamış) bir misafir varsa KESİNLİKLE ENGELLE
+    const activeInhouseGuest = reservations.find(
+      (r) => r.id !== res.id && r.roomNumber === res.roomNumber && r.lifecycle === "INHOUSE"
+    );
+
+    if (activeInhouseGuest) {
+      setConflictPopup({
+        title: "CHECK-IN ENGELLENDİ — ODA HALİHAZIRDA INHOUSE",
+        message: `Oda ${res.roomNumber} şu anda INHOUSE modülünde aktif olarak dolu görünüyor! Mevcut misafirin çıkışı (Check-Out) yapılmadan yeni giriş alınamaz.`,
+        detailLine: `Odadaki Aktif Misafir: ${activeInhouseGuest.firstName} ${activeInhouseGuest.lastName} (${activeInhouseGuest.resCode} • Çıkış: ${formatTrDate(activeInhouseGuest.checkOut)})`,
+      });
+      return;
+    }
+
+    // 2D. Gelecek tarihli rezervasyonlarla tarih çakışması varsa engelle
+    const futureOverlap = reservations.find(
+      (r) =>
+        r.id !== res.id &&
+        r.roomNumber === res.roomNumber &&
+        r.lifecycle === "CONFIRMED" &&
+        isDateRangeOverlapping(res.checkIn, res.checkOut, r.checkIn, r.checkOut)
+    );
+
+    if (futureOverlap) {
+      setConflictPopup({
+        title: "TARİH ÇAKIŞMASI — CHECK-IN ENGELLENDİ",
+        message: `Oda ${res.roomNumber} için aynı tarihlerde çakışan başka bir onaylı rezervasyon mevcut.`,
+        detailLine: `Çakışan Kayıt: ${futureOverlap.resCode} • ${futureOverlap.firstName} ${futureOverlap.lastName} (${formatTrDate(futureOverlap.checkIn)} → ${formatTrDate(futureOverlap.checkOut)})`,
+      });
+      return;
+    }
+
+    // Tüm kontroller temizse CHECK-IN işlemini tamamla
+    const nowTime = new Date().toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" });
+    setReservations((prev) =>
+      prev.map((r) => (r.id === res.id ? { ...r, lifecycle: "INHOUSE", checkedInAt: nowTime } : r))
+    );
+  };
+
+  const handleUndoCheckIn = (res: Reservation) => {
+    setReservations((prev) =>
+      prev.map((r) =>
+        r.id === res.id ? { ...r, lifecycle: "CONFIRMED", checkedInAt: undefined } : r
+      )
+    );
+  };
+
+  // KURAL 3: DUE OUTS -> ÖDEME AL NOTU İLE EŞLEŞEN CHECK OUT AKSİYONU
+  const handleCheckOut = (res: Reservation, collectedNow: number = 0) => {
+    const remainingBalance = Math.max(0, res.totalAmount - res.paidAmount);
+    const updatedPaidAmount = res.paidAmount + collectedNow;
+
+    if (remainingBalance > 0 && updatedPaidAmount !== res.totalAmount) {
+      setConflictPopup({
+        title: "AÇIK BAKİYE — CHECK-OUT ENGELLENDİ",
+        message: `Oda ${res.roomNumber} (${res.firstName} ${res.lastName}) için ${remainingBalance.toLocaleString("tr-TR")} TL kalan ödeme tahsil edilmeden Check-Out yapılamaz.`,
+        detailLine: "ÖDEME AL kutusuna kalan tutarı girerek ödemeyi kapatın.",
+      });
+      return;
+    }
+
+    const nowTime = new Date().toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" });
+    setReservations((prev) =>
+      prev.map((r) =>
+        r.id === res.id
+          ? {
+              ...r,
+              paidAmount: updatedPaidAmount,
+              paymentStatus: "ODENDI",
+              lifecycle: "CHECKED_OUT",
+              checkedOutAt: nowTime,
+            }
+          : r
+      )
+    );
+
+    setDueOutPaymentInputs((prev) => {
+      const copy = { ...prev };
+      delete copy[res.id];
+      return copy;
+    });
+
+    if (res.roomNumber) {
+      setRooms((prev) =>
+        prev.map((rm) => (rm.roomNumber === res.roomNumber ? { ...rm, isDirty: true } : rm))
+      );
+    }
+  };
+
+  const handleUndoCheckOut = (res: Reservation) => {
+    // Geri alırken odaya başka biri girmiş mi kontrol et
+    const occupiedNow = reservations.find(
+      (r) => r.id !== res.id && r.roomNumber === res.roomNumber && r.lifecycle === "INHOUSE"
+    );
+    if (occupiedNow) {
+      setConflictPopup({
+        title: "GERİ ALMA ENGELLENDİ",
+        message: `Oda ${res.roomNumber} şu anda ${occupiedNow.firstName} ${occupiedNow.lastName} tarafından kullanıldığı için eski Check-Out geri alınamaz.`,
+      });
+      return;
+    }
+
+    setReservations((prev) =>
+      prev.map((r) =>
+        r.id === res.id ? { ...r, lifecycle: "INHOUSE", checkedOutAt: undefined } : r
+      )
+    );
+  };
+
+  // INHOUSE / RACK -> ODA FİZİKSEL DURUMU DEĞİŞTİRME
+  const handleSetRoomPhysicalStatus = (roomNumber: string, newStatus: RoomPhysicalStatus) => {
+    setRooms((prev) =>
+      prev.map((rm) =>
+        rm.roomNumber === roomNumber ? { ...rm, physicalStatus: newStatus } : rm
+      )
+    );
+  };
+
+  const handleOpenRackCard = (room: HotelRoom) => {
+    const reqs = roomRequests[room.roomNumber] || { teknik: "", hk: "", resepsiyon: "" };
+    setDraftTeknik(reqs.teknik);
+    setDraftHk(reqs.hk);
+    setDraftResepsiyon(reqs.resepsiyon);
+    setRackModalRoomNumber(room.roomNumber);
+  };
+
+  const handleSaveRoomReq = (type: keyof RoomRequests, val: string) => {
+    if (!rackModalRoomNumber) return;
+    setRoomRequests((prev) => ({
+      ...prev,
+      [rackModalRoomNumber]: {
+        ...(prev[rackModalRoomNumber] || { teknik: "", hk: "", resepsiyon: "" }),
+        [type]: val.trim(),
+      },
+    }));
+  };
+
+  const handleDeleteRoomReq = (type: keyof RoomRequests) => {
+    if (!rackModalRoomNumber) return;
+    if (type === "teknik") setDraftTeknik("");
+    if (type === "hk") setDraftHk("");
+    if (type === "resepsiyon") setDraftResepsiyon("");
+
+    setRoomRequests((prev) => ({
+      ...prev,
+      [rackModalRoomNumber]: {
+        ...(prev[rackModalRoomNumber] || { teknik: "", hk: "", resepsiyon: "" }),
+        [type]: "",
+      },
+    }));
+  };
+
+  // ==========================================================================
+  // TÜRETİLMİŞ LİSTELER
+  // ==========================================================================
+  const handleSort = (field: SortField) => {
+    if (sortField === field) setSortDirection((p) => (p === "asc" ? "desc" : "asc"));
+    else {
+      setSortField(field);
+      setSortDirection("asc");
+    }
+  };
+
+  const multiRoomKeys = useMemo(() => {
+    const counts: Record<string, number> = {};
+    reservations.forEach((r) => {
+      const k = r.groupId || `${r.firstName} ${r.lastName}`;
+      counts[k] = (counts[k] || 0) + 1;
+    });
+    return new Set(Object.keys(counts).filter((k) => counts[k] > 1));
+  }, [reservations]);
+
+  const filterAndSortList = (list: Reservation[], applyDateFilter: boolean) => {
+    const q = searchQuery.toLowerCase().trim();
+    const filtered = list.filter((r) => {
+      const fullName = `${r.firstName} ${r.lastName}`;
+      const isMulti = multiRoomKeys.has(r.groupId || fullName);
+      if (onlyMultiRoom && !isMulti) return false;
+      if (applyDateFilter && dateFilter !== "ALL" && r.checkIn !== dateFilter) return false;
+      if (paymentFilter !== "ALL" && r.paymentStatus !== paymentFilter) return false;
+      if (q) {
+        const roomStr = (r.roomNumber || "boş").toLowerCase();
+        if (
+          !fullName.toLowerCase().includes(q) &&
+          !r.resCode.toLowerCase().includes(q) &&
+          !roomStr.includes(q)
+        ) {
+          return false;
+        }
+      }
+      return true;
+    });
+
+    return [...filtered].sort((a, b) => {
+      let comp = 0;
+      const nameA = `${a.firstName} ${a.lastName}`;
+      const nameB = `${b.firstName} ${b.lastName}`;
+      switch (sortField) {
+        case "resCode":
+          comp = a.resCode.localeCompare(b.resCode, "tr");
+          break;
+        case "roomNumber":
+          comp = (a.roomNumber || "ZZZZ").localeCompare(b.roomNumber || "ZZZZ", "tr");
+          break;
+        case "guestName":
+          comp = nameA.localeCompare(nameB, "tr");
+          break;
+        case "checkIn":
+          comp = a.checkIn.localeCompare(b.checkIn);
+          break;
+        case "category":
+          comp = getCategoryName(a.categoryId).localeCompare(getCategoryName(b.categoryId), "tr");
+          break;
+        case "paidAmount":
+          comp = a.paidAmount - b.paidAmount;
+          break;
+      }
+      if (comp === 0 && nameA === nameB) return a.resCode.localeCompare(b.resCode, "tr");
+      return sortDirection === "asc" ? comp : -comp;
+    });
+  };
+
+  const allReservationsSorted = useMemo(
+    () => filterAndSortList(reservations, true),
+    [reservations, searchQuery, dateFilter, paymentFilter, onlyMultiRoom, sortField, sortDirection, categories]
+  );
+
+  const pendingArrivals = useMemo(
+    () =>
+      filterAndSortList(
+        reservations.filter((r) => r.checkIn === systemToday && r.lifecycle === "CONFIRMED"),
+        false
+      ),
+    [reservations, systemToday, searchQuery, paymentFilter, onlyMultiRoom, sortField, sortDirection, categories]
+  );
+
+  const checkedInToday = useMemo(
+    () =>
+      filterAndSortList(
+        reservations.filter((r) => r.checkIn === systemToday && r.lifecycle === "INHOUSE"),
+        false
+      ),
+    [reservations, systemToday, searchQuery, paymentFilter, onlyMultiRoom, sortField, sortDirection, categories]
+  );
+
+  const dueOutsList = useMemo(
+    () => reservations.filter((r) => r.checkOut === systemToday && r.lifecycle === "INHOUSE"),
+    [reservations, systemToday]
+  );
+
+  const checkedOutList = useMemo(
+    () => reservations.filter((r) => r.checkOut === systemToday && r.lifecycle === "CHECKED_OUT"),
+    [reservations, systemToday]
+  );
+
+  const getRoomRackInfo = (room: HotelRoom) => {
+    if (room.physicalStatus === "OUT_OF_ORDER") {
+      return { status: "OUT_OF_ORDER" as RackDisplayStatus, activeRes: undefined };
+    }
+    if (room.physicalStatus === "CLOSED_TO_SALES") {
+      return { status: "CLOSED_TO_SALES" as RackDisplayStatus, activeRes: undefined };
+    }
+    const activeRes = reservations.find(
+      (r) => r.roomNumber === room.roomNumber && r.lifecycle === "INHOUSE"
+    );
+    if (activeRes) {
+      if (activeRes.checkOut === systemToday) {
+        return { status: "DUE_OUT" as RackDisplayStatus, activeRes };
+      }
+      return { status: "INHOUSE" as RackDisplayStatus, activeRes };
+    }
+    return { status: "BOS" as RackDisplayStatus, activeRes: undefined };
+  };
+
+  const renderSortIcon = (field: SortField) => {
+    if (sortField !== field) return <ArrowUpDown className="w-3.5 h-3.5 text-slate-400 opacity-70" />;
+    return sortDirection === "asc" ? (
+      <ArrowUp className="w-3.5 h-3.5 text-sky-600" />
+    ) : (
+      <ArrowDown className="w-3.5 h-3.5 text-sky-600" />
+    );
+  };
+
+  const activeRackRoom = useMemo(
+    () => rooms.find((rm) => rm.roomNumber === rackModalRoomNumber) || null,
+    [rooms, rackModalRoomNumber]
+  );
+
+  return (
+    <div className="flex flex-col h-screen bg-slate-100 text-slate-800 font-sans select-none">
+      {/* ÜST ANA NAVİGASYON BAR */}
+      <header className="flex items-center justify-between px-5 py-2.5 bg-slate-900 text-white border-b border-slate-700 shrink-0">
+        <div className="flex items-center gap-6">
+          <span className="font-extrabold tracking-wider text-sm text-sky-400">STAYFLOW PMS</span>
+
+          <nav className="flex items-center gap-1.5">
+            <button
+              onClick={() => setActiveModule("RESERVATION")}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-bold tracking-wide transition cursor-pointer ${
+                activeModule === "RESERVATION" ? "bg-sky-600 text-white" : "text-slate-300 hover:bg-slate-800"
+              }`}
+            >
+              <Calendar className="w-3.5 h-3.5" />
+              RESERVATION
+            </button>
+
+            <button
+              onClick={() => setActiveModule("ARRIVALS")}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-bold tracking-wide transition cursor-pointer ${
+                activeModule === "ARRIVALS" ? "bg-sky-600 text-white" : "text-slate-300 hover:bg-slate-800"
+              }`}
+            >
+              <LogIn className="w-3.5 h-3.5" />
+              ARRIVALS
+              <span className="ml-1 bg-emerald-500 text-slate-950 px-1.5 rounded-full text-[10px]">
+                {pendingArrivals.length}
+              </span>
+            </button>
+
+            <button
+              onClick={() => setActiveModule("INHOUSE_RACK")}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-bold tracking-wide transition cursor-pointer ${
+                activeModule === "INHOUSE_RACK" ? "bg-sky-600 text-white" : "text-slate-300 hover:bg-slate-800"
+              }`}
+            >
+              <BedDouble className="w-3.5 h-3.5" />
+              INHOUSE / RACK
+            </button>
+
+            <button
+              onClick={() => setActiveModule("DUE_OUTS")}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-bold tracking-wide transition cursor-pointer ${
+                activeModule === "DUE_OUTS" ? "bg-sky-600 text-white" : "text-slate-300 hover:bg-slate-800"
+              }`}
+            >
+              <LogOut className="w-3.5 h-3.5" />
+              DUE OUTS
+              <span className="ml-1 bg-amber-400 text-slate-950 px-1.5 rounded-full text-[10px]">
+                {dueOutsList.length}
+              </span>
+            </button>
+          </nav>
+        </div>
+
+        <div className="flex items-center gap-3">
+          <span className="text-xs text-slate-300 hidden sm:inline">
+            Tarih: <b className="text-white">{formatTrDate(systemToday)}</b>
+          </span>
+          <button
+            onClick={() => setShowExtraModules(!showExtraModules)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-slate-800 hover:bg-slate-700 border border-slate-600 text-xs font-semibold text-emerald-400 cursor-pointer"
+          >
+            <Grid className="w-3.5 h-3.5" />
+            Diğer Modüller (5-8)
+          </button>
+        </div>
+      </header>
+
+      {/* ONCLICK DİĞER MODÜLLER (5-8) YER TUTUCU BANDI */}
+      {showExtraModules && (
+        <div className="bg-slate-800 text-white px-5 py-2 border-b border-slate-700 flex items-center gap-2 text-xs">
+          <span className="text-slate-400 font-semibold">Sonra Tanımlanacak Modüller:</span>
+          <span className="px-2.5 py-1 rounded bg-slate-700 text-slate-300">5. Modül</span>
+          <span className="px-2.5 py-1 rounded bg-slate-700 text-slate-300">6. Modül</span>
+          <span className="px-2.5 py-1 rounded bg-slate-700 text-slate-300">7. Modül</span>
+          <span className="px-2.5 py-1 rounded bg-slate-700 text-slate-300">8. Modül</span>
+        </div>
+      )}
+
+      {/* ====================================================================
+          ANA ÇALIŞMA ALANI
+         ==================================================================== */}
+      <main className="flex-1 p-5 overflow-auto">
+        {/* ------------------------------------------------------------------
+            1. MODÜL: RESERVATION
+           ------------------------------------------------------------------ */}
+        {activeModule === "RESERVATION" && (
+          <div className="flex flex-col gap-3 max-w-7xl mx-auto">
+            <div className="flex flex-wrap items-center justify-between gap-3 bg-white p-3 rounded-lg border border-slate-300 shadow-xs">
+              <div className="flex flex-wrap items-center gap-3 flex-1">
+                <div className="relative w-72">
+                  <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    placeholder="İsim, soyisim, rez no veya oda no ara..."
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    className="w-full pl-9 pr-3 py-1.5 text-xs border border-slate-300 rounded-md focus:outline-none focus:border-sky-600"
+                  />
+                </div>
+
+                <div className="flex items-center gap-1.5 text-xs">
+                  <span className="text-slate-500 font-semibold">Giriş Tarihi:</span>
+                  <select
+                    value={dateFilter}
+                    onChange={(e) => setDateFilter(e.target.value)}
+                    className="border border-slate-300 rounded-md px-2.5 py-1.5 bg-white font-medium"
+                  >
+                    <option value="ALL">Tüm Tarihler</option>
+                    {Array.from(new Set(reservations.map((r) => r.checkIn)))
+                      .sort()
+                      .map((d) => (
+                        <option key={d} value={d}>
+                          {formatTrDate(d)}
+                        </option>
+                      ))}
+                  </select>
+                </div>
+
+                <div className="flex items-center gap-1.5 text-xs">
+                  <span className="text-slate-500 font-semibold">Ödeme:</span>
+                  <select
+                    value={paymentFilter}
+                    onChange={(e) => setPaymentFilter(e.target.value as "ALL" | PaymentStatus)}
+                    className="border border-slate-300 rounded-md px-2.5 py-1.5 bg-white font-medium"
+                  >
+                    <option value="ALL">Tümü</option>
+                    <option value="ODENDI">Ödendi</option>
+                    <option value="KISMI_ODENDI">Kısmi Ödendi</option>
+                    <option value="ODENMEDI">Ödenmedi</option>
+                  </select>
+                </div>
+
+                <label className="flex items-center gap-2 px-3 py-1.5 rounded-md border border-rose-300 bg-rose-50/70 text-xs font-bold text-rose-900 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={onlyMultiRoom}
+                    onChange={(e) => setOnlyMultiRoom(e.target.checked)}
+                    className="accent-rose-600 rounded"
+                  />
+                  <Layers class
